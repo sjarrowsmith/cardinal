@@ -16,6 +16,6 @@ dependencies:
   - notebook
   - toml
   - pandas
-  - dask
+  - dask=2.23.0
   - tqdm
   - networkx
