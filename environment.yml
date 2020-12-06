@@ -1,0 +1,21 @@
+name: cardinal
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - utm
+  - obspy
+  - numpy
+  - scipy
+  - pyproj
+  - cartopy
+  - matplotlib
+  - scikit-learn
+  - numba
+  - ipython
+  - notebook
+  - toml
+  - pandas
+  - dask
+  - tqdm
+  - networkx
