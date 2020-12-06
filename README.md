@@ -2,7 +2,7 @@
 Seismic and geoacoustic array processing
 
 ## Installing
-To install Cardinal:
+To install Cardinal:<br/>
 conda env create -f environment.yml
 (and marvel at the number of dependencies this builds on!)
 
