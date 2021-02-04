@@ -474,6 +474,8 @@ def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, mi
     families = []
     for i in range(0, len(pixel_ids)):
 
+        #print(i)
+        
         # Computing distances between i'th pixel and all other pixels over threshold:
         distances = compute_all_distances_for_pixel(i, ix, T_ix, F_ix, B_ix,
                                                     sigma_t=sigma_t, sigma_f=sigma_f, sigma_b=sigma_b)

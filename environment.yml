@@ -19,3 +19,4 @@ dependencies:
   - dask=2.23.0
   - tqdm
   - networkx
+  - ipympl
