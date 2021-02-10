@@ -124,7 +124,7 @@ def load_sliding_window_multifreq(fname):
 def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight',
-                                  twin_plot=None, f_lim=None, 
+                                  twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
                                   ix=None, pixels_in_families=None, figsize=(9,5)):
     '''
     Plots the results of sliding-window array processing that span multiple frequency bands
@@ -146,6 +146,8 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     - log_freq is a Boolean that defines whether to plot array processing results on a log frequency scale
     - cmap_cyclic is the Matplotlib colormap used to plot backazimuth (try 'twilight_shifted' for a different look)
     - f_lim can provide limits for plotting the frequency axis
+    - plot_real_amplitude should be set to True to plot the amplitudes, otherwise they are normalized
+    - amplitude_units is the units to display on the y-axis for the waveform
     - ix is the indices of frequencies, times where semblance > threshold
     - pixels_in_families is a Numpy array of all unique pixel ID's that are in families
     '''
@@ -163,9 +165,13 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     fig, ax = plt.subplots(figsize=figsize)
     ax1 = plt.subplot(3,1,1)
     t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
-    plt.plot(t_tr, tr.data/np.max(np.abs(tr.data)), 'k-')
+    if plot_real_amplitude:
+        plt.plot(t_tr, tr.data, 'k-')
+        plt.ylabel(amplitude_units)
+    else:
+        plt.plot(t_tr, tr.data/np.max(np.abs(tr.data)), 'k-')
+        ax1.tick_params(labelleft=False)
     ax1.tick_params(labelbottom=False)
-    ax1.tick_params(labelleft=False)
 
     ax2 = plt.subplot(3,1,2, sharex=ax1)
     ax2.tick_params(labelbottom=False)
