@@ -235,7 +235,8 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     else:
         cbar_ax.set_ylabel('Semblance')
 
-def plot_sliding_window(st, element, T, B, V, C=None, v_max=5., twin_plot=None):
+def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
+                        semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5)):
     '''
     Plots the results of sliding-window array processing
     
@@ -252,7 +253,7 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_max=5., twin_plot=None):
     
     tr = st.select(station=element)[0]
 
-    fig, ax = plt.subplots(figsize=(9,5))
+    fig, ax = plt.subplots(figsize=figsize)
 
     ax1 = plt.subplot(3,1,1)
     t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
@@ -261,7 +262,13 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_max=5., twin_plot=None):
 
     ax2 = plt.subplot(3,1,2, sharex=ax1)
     if C is not None:
-        plt.scatter(T, B, s=4, c=C, cmap=plt.get_cmap('hot_r'))
+        if semblance_threshold is not None:
+            ix2 = np.where(C < semblance_threshold)
+            plt.scatter(T[ix2], B[ix2], s=0.05, c='lightgray')
+            ix = np.where(C >= semblance_threshold)
+            plt.scatter(T[ix], B[ix], s=4, c=C[ix], vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
+        else:
+            plt.scatter(T, B, s=4, c=C, vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
     else:
         plt.plot(T, B, 'k.')
     ax2.set_ylim([0,360])
@@ -272,13 +279,21 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_max=5., twin_plot=None):
 
     ax3 = plt.subplot(3,1,3, sharex=ax1)
     if C is not None:
-        plt.scatter(T, V, s=4, c=C, cmap=plt.get_cmap('hot_r'))
+        if semblance_threshold is not None:
+            ix2 = np.where(C < semblance_threshold)
+            plt.scatter(T[ix2], V[ix2], s=0.05, c='lightgray')
+            ix = np.where(C >= semblance_threshold)
+            plt.scatter(T[ix], V[ix], s=4, c=C[ix], vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
+        else:
+            plt.scatter(T, V, s=4, c=C, vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
     else:
         plt.plot(T, V, 'k.')
-    ax3.set_ylim([0,v_max])
+    ax3.set_ylim([v_min,v_max])
     ax3.set_ylabel('Phase vel.')
     ax3.set_xlabel('Time (s) after ' + str(tr.stats.starttime).split('.')[0].replace('T', ' '))
     
+    plt.xlim([t_tr[0], t_tr[len(t_tr)-1]])
+
     ax1.get_yaxis().set_ticks([])
 
 def make_custom_fbands(f_min=0.01, f_max=50, win_min=3, win_max=200, overlap=0.1, type='third_octave'):
@@ -627,13 +642,13 @@ def sliding_time_array_fk_multifreq(st, element, f_bands, t_start=None, t_end=No
         win_frac = f_bands[f_bands['band'] == f_band]['step'].values[0]/f_bands[f_bands['band'] == f_band]['win'].values[0]
 
         if n_workers == 1:
-            T, B, V, S = sliding_time_array_fk(st, element, t_start, t_end, win_len=win_len, win_frac=win_frac, 
+            T, B, V, S = sliding_time_array_fk(st, element, tstart=t_start, tend=t_end, win_len=win_len, win_frac=win_frac, 
                                                frqlow=frqlow, frqhigh=frqhigh,
                                                sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y, sl_s=sl_s,
                                                sl_corr=sl_corr)
             T_all.append(T); B_all.append(B); V_all.append(V); S_all.append(S)
         else:
-            dask_out = dask.delayed(sliding_time_array_fk)(st, element, t_start, t_end, 
+            dask_out = dask.delayed(sliding_time_array_fk)(st, element, tstart=t_start, tend=t_end, 
                                                            win_len=win_len, win_frac=win_frac, 
                                                            frqlow=frqlow, frqhigh=frqhigh,
                                                            sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, 
@@ -671,7 +686,7 @@ def sliding_time_array_fk_multifreq(st, element, f_bands, t_start=None, t_end=No
 
     return T, B, V, S
 
-def sliding_time_array_fk(st, element, tstart, tend, win_len=20, win_frac=0.5, frqlow=0.5, frqhigh=4,
+def sliding_time_array_fk(st, element, tstart=None, tend=None, win_len=20, win_frac=0.5, frqlow=0.5, frqhigh=4,
                           sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18, sl_corr=[0.,0.],
                           normalize_waveforms=True):
     '''
@@ -683,6 +698,11 @@ def sliding_time_array_fk(st, element, tstart, tend, win_len=20, win_frac=0.5, f
 
     tr = st.select(station=element)[0]    # Trace of reference element
 
+    # Defining t_start, t_end:
+    if (tstart == None) and (tend == None):
+        tstart = 1
+        tend = (tr.stats.npts * tr.stats.delta)-1
+    
     for st_i in st:
         st_i.stats.coordinates = AttribDict({
             'latitude': st_i.stats.sac.stla,
