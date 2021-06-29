@@ -125,7 +125,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
-                                  ix=None, pixels_in_families=None, figsize=(9,5)):
+                                  ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None):
     '''
     Plots the results of sliding-window array processing that span multiple frequency bands
 
@@ -150,6 +150,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     - amplitude_units is the units to display on the y-axis for the waveform
     - ix is the indices of frequencies, times where semblance > threshold
     - pixels_in_families is a Numpy array of all unique pixel ID's that are in families
+    - fname_plot is an optional filename to save the plot to
     '''
 
     S_filt = S.copy()
@@ -234,6 +235,9 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
         cbar_ax.set_ylabel('Velocity (km/s)')
     else:
         cbar_ax.set_ylabel('Semblance')
+    
+    if fname_plot is not None:
+        plt.savefig(fname_plot)
 
 def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
                         semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5)):
