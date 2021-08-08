@@ -121,7 +121,7 @@ def load_sliding_window_multifreq(fname):
 
     return st, f_bands, T, B, V, S
 
-def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
+def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None, event_window=None, bandpass=None,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
@@ -139,6 +139,11 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     - S is a NumPy array of semblances of length [NB, NT]
 
     Optional parameters:
+    - title is a string that adds a user defined title to the plot and, if bandpass is used, appends the bandpass frequencies
+    - event_window is a tuple that takes the distance (km) between source and receiver, the UTC time that the event
+      occurred, and the vmin and vmax celerity then plots predicted arrival time window 
+      e.g. (15, UTCDateTime('2018-01-01 14:00:00'), .34, .26)
+    - bandpass is a list that takes a min and max frequency to be filtered
     - semblance_threshold is the minimum value of semblance to plot B or V values for (default=0.7)
     - clim_baz is a list that puts an optional color limit for backazimuth, e.g., clim_baz=[10,30]
     - clim_vtr is a list that puts an optional color limit for phase/trace velocity
@@ -155,6 +160,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
 
     S_filt = S.copy()
 
+    
     if (pixels_in_families is not None) and (ix is not None):
         # Set all semblances to zero where the pixel is not in a family:
         x = np.zeros(S.shape)
@@ -166,6 +172,32 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     fig, ax = plt.subplots(figsize=figsize)
     ax1 = plt.subplot(3,1,1)
     t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
+    
+    if title is not None:
+        plt.title(title+ ": Bandpass " + str(bandpass))
+    
+    #creating time window
+    if event_window is not None:
+        dist= event_window[0]
+        event_hour=float(str(event_window[1]).split('T')[1].split(":")[0])
+        event_minute=float(str(event_window[1]).split('T')[1].split(":")[1])
+        event_second=float((str(event_window[1]).split('T')[1].split(":")[2])[:2])
+        event_time=(60*60*event_hour)+(60*event_minute)+(event_second)
+        vmin=event_window[2]
+        vmax=event_window[3]
+        arrival_1= (dist/vmax) + event_time
+        arrival_2= (dist/vmin) + event_time
+        plt.axvline(event_time, c= 'r')
+        plt.axvline(arrival_1, c= 'g')
+        plt.axvline(arrival_2, c= 'g')
+    
+    
+    if (bandpass is None):
+        pass
+    else:
+        tr.filter('bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
+    
+    
     if plot_real_amplitude:
         plt.plot(t_tr, tr.data, 'k-')
         plt.ylabel(amplitude_units)
@@ -179,14 +211,22 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     ix = np.where(S_filt < semblance_threshold)
     B_plt = B.copy()
     B_plt[ix] = None
-
+    
+    #if clim_baz[0]>clim_baz[1]:
+    #    B_plt=B_plt.copy()
+    #    np.where((B_plt > 0) & (B_plt<clim_baz[0]), B_plt+360, B_plt)
+    #else:
+    #    pass
+    
     t_plot = np.hstack((T,T[len(T)-1]+np.diff(T)[0]))
     f_plot = np.hstack((f_bands['fmin'].values, f_bands['fmax'].values[len(f_bands['fmax'])-1]))
-
+    
     #pcm1 = plt.pcolormesh(T, f_bands['fcenter'].values, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='nearest')
     pcm1 = plt.pcolormesh(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
-    if clim_baz is not None:
+    if clim_baz is not None and clim_baz[0]<clim_baz[1]:
         plt.clim([clim_baz[0], clim_baz[1]])
+    elif clim_baz is not None and clim_baz[0]>clim_baz[1]:
+        plt.clim([clim_baz[0], clim_baz[1]+360])
     plt.ylabel('Freq. (Hz)')
     if log_freq:
         plt.yscale('log')
@@ -221,6 +261,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     
     if f_lim is not None:
         plt.ylim(f_lim)
+
     
     # Manually adding colorbars:
     fig.subplots_adjust(right=0.85)
@@ -228,6 +269,14 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S,
     fig.colorbar(pcm1, cax=cbar_ax)
     cbar_ax.set_ylabel('Azimuth (deg.)')
     cbar_ax.locator_params(nbins=6)
+    
+    if clim_baz is not None:
+        if clim_baz[0]>clim_baz[1]:
+            tick_labels= np.array(cbar_ax.get_yticks())
+            tick_labels= tick_labels.astype(int)
+            new_labels=(np.where((tick_labels > 360), tick_labels-360, tick_labels))
+            cbar_ax.set_yticklabels(new_labels)
+    
     cbar_ax = fig.add_axes([0.86, 0.113, 0.02, 0.22])
     fig.colorbar(pcm2, cax=cbar_ax)
     cbar_ax.locator_params(nbins=5)
