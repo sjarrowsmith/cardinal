@@ -1025,7 +1025,12 @@ def plot_beam(st, int_shifts, ref_station, twin=None, trace_spacing=2., return_b
         # Normalizing data prior to plotting
         data = data/(np.max(np.abs(data)))
 
-        plt.plot(np.arange(0, len(data)*tr_ref.stats.delta, tr_ref.stats.delta), ix*trace_spacing + data, 'k')
+        try:
+            t_data = np.arange(0, len(data)*tr_ref.stats.delta, tr_ref.stats.delta)
+            t_data = t_data[0:len(data)]
+            plt.plot(t_data, ix*trace_spacing + data, 'k')
+        except:
+            pdb.set_trace()
         
         ix = ix + 1
 
