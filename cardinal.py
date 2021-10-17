@@ -511,7 +511,7 @@ def compute_all_distances_for_pixel(i, ix, T_ix, F_ix, B_ix, sigma_t=2, sigma_f=
     return distances
 
 def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, min_pixels=6,
-                  sigma_t=2, sigma_f=2, sigma_b=10):
+                  sigma_t=2, sigma_f=2, sigma_b=10, n_forward=200):
     '''
     Makes families by applying a semblance threshold and clustering resultant pixels based
     on weighted distance
@@ -529,41 +529,52 @@ def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, mi
     sigma_t - Standard deviation in time indices for clustering
     sigma_f - Standard deviation in frequency indices for clustering
     sigma_b - Standard deviation in backazimuth for clustering
+    n_forward - Number of pixels after a pixel (in time) to compute weighted distances
 
     Outputs:
     ix - Indices of frequencies, times where semblance > threshold
     pixels_in_families - Numpy array of all unique pixel ID's that are in families
     families - List of families (each contains unique pixel ID's in that family)
-    family_sizes - List containing the number of pixels in each family
-    T_family - The mean time in each family
+    
+    Note: ix and pixels_in_families are provided for plotting purposes, such that:
+    x = np.zeros(S.shape)
+    x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
     '''
     
-    # Extracting values of T, F, B, V where semblance is greater than threshold:
+    # Extracting pixels, and associated parameters, above the semblance threshold:
     ix = np.where(S>=threshold)
     S_ix = S[ix]; B_ix = B[ix]; V_ix = V[ix]
     F_ix = f_bands['fcenter'].values[ix[0]]; T_ix = T[ix[1]]
     pixel_ids = np.arange(0, len(ix[0]))    # A list of unique pixel ID's
 
-    # Building families by finding pixel ID's that are linked:
-    families = []
-    for i in range(0, len(pixel_ids)):
+    # Splitting ix into an index on frequency (ix_f) and an index on time (ix_t):
+    ix_f = ix[0]; ix_t = ix[1]
 
-        #print(i)
-        
-        # Computing distances between i'th pixel and all other pixels over threshold:
-        distances = compute_all_distances_for_pixel(i, ix, T_ix, F_ix, B_ix,
-                                                    sigma_t=sigma_t, sigma_f=sigma_f, sigma_b=sigma_b)
+    # Sorting the pixel vectors by time:
+    ix_sort_time = np.argsort(ix_t)
+    ix_f = ix_f[ix_sort_time]; ix_t = ix_t[ix_sort_time]
+    B_ix = B_ix[ix_sort_time]; T_ix = T_ix[ix_sort_time]
+    F_ix = F_ix[ix_sort_time]; S_ix = S_ix[ix_sort_time]
+    V_ix = V_ix[ix_sort_time]
 
-        # Finding pixels within distance threshold:
-        ixd = np.where(distances <= dist_thres)[0]
+    # Looping over each individual pixel in the pixel vectors:
+    for i in range(0, len(B_ix)):
+
+        # Checking for nearby pixels within a distance threshold:
+        d1 = (ix_f[i] - ix_f[i+1:i+n_forward])**2 / sigma_f**2
+        d2 = (ix_t[i] - ix_t[i+1:i+n_forward])**2 / sigma_t**2
+        d3 = (B_ix[i] - B_ix[i+1:i+n_forward])**2 / sigma_b**2
+        d = np.sqrt(d1+d2+d3)                                        # The distance to each i+1 -> i+n_forward pixel
+        ixd = i + 1 + np.where(d <= dist_thres)[0]                   # The index of each associated pixel
 
         # Saving all pairs of pixels that are associated:
         assoc = np.vstack((np.tile(i, ixd.shape), ixd)).transpose()
+
         if i == 0:
             assoc_all = assoc
         else:
             assoc_all = np.vstack((assoc_all, assoc))
-    
+
     # Applying the networkx library to group pairs into families:
     G = nx.Graph()
     G.add_edges_from(assoc_all)
@@ -591,7 +602,10 @@ def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, mi
         maxsemb.append(np.max(S_ix[family]))
         npixels.append(len(family))
     detections = np.array([starttime,endtime,minfreq,maxfreq,meanbaz,stdbaz,meanvel,stdvel,maxsemb,npixels])
-
+    
+    # Recombining ix as a tuple for plotting:
+    ix = (ix_f, ix_t)
+    
     return ix, pixels_in_families, detections
 
 def df_families(ref_time, families):
