@@ -123,7 +123,7 @@ def load_sliding_window_multifreq(fname):
 
 def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None, event_window=None, bandpass=None,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
-                                  plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight',
+                                  plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight', cmap_sequential='pink_r',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
                                   ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None):
     '''
@@ -197,12 +197,13 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     else:
         tr.filter('bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
     
-    
+    t_tr, y = fix_lengths(t_tr, tr.data)
+
     if plot_real_amplitude:
-        plt.plot(t_tr, tr.data, 'k-')
+        plt.plot(t_tr, y, 'k-')
         plt.ylabel(amplitude_units)
     else:
-        plt.plot(t_tr, tr.data/np.max(np.abs(tr.data)), 'k-')
+        plt.plot(t_tr, y/np.max(np.abs(y)), 'k-')
         ax1.tick_params(labelleft=False)
     ax1.tick_params(labelbottom=False)
 
@@ -236,7 +237,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
         V_plt = V.copy()
         V_plt[ix] = None
         #pcm2 = plt.pcolormesh(T, f_bands['fcenter'].values, V_plt, cmap=plt.get_cmap('pink_r'), shading='nearest')
-        pcm2 = plt.pcolormesh(t_plot, f_plot, V_plt, cmap=plt.get_cmap('pink_r'), shading='flat')
+        pcm2 = plt.pcolormesh(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
         if clim_vtr is not None:
             plt.clim([clim_vtr[0], clim_vtr[1]])
         plt.ylabel('Freq. (Hz)')
@@ -247,7 +248,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
         # Plotting semblance
         ax3 = plt.subplot(3,1,3, sharex=ax1, sharey=ax2)
         #pcm2 = plt.pcolormesh(T, f_bands['fcenter'].values, S, cmap=plt.get_cmap('pink_r'), shading='nearest')
-        pcm2 = plt.pcolormesh(t_plot, f_plot, S, cmap=plt.get_cmap('pink_r'), shading='flat')
+        pcm2 = plt.pcolormesh(t_plot, f_plot, S, cmap=plt.get_cmap(cmap_sequential), shading='flat')
         plt.clim([0,1])
         plt.ylabel('Freq. (Hz)')
         plt.xlabel('Time (s) after ' + start_time_string)
@@ -287,6 +288,18 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     
     if fname_plot is not None:
         plt.savefig(fname_plot)
+
+def fix_lengths(t, y):
+
+    t_out = t.copy()
+    y_out = y.copy()
+
+    if len(t_out) > len(y_out):
+        t_out = t_out[0:len(y_out)]
+    elif len(y_out) > len(t_out):
+        y_out = y_out[0:len(y_out)]
+
+    return t_out, y_out
 
 def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
                         semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5)):
@@ -675,7 +688,8 @@ def sliding_time_array_fk_multifreq_tblock(st, element, f_bands, t_start=None, t
     return T, B, V, S
 
 def sliding_time_array_fk_multifreq(st, element, f_bands, t_start=None, t_end=None, n_workers=1,
-                                    sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18, sl_corr=[0.,0.]):
+                                    sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18, sl_corr=[0.,0.],
+                                    use_geographic_coords=True):
     '''
     Processes st with sliding window FK analysis in multiple frequency bands.
 
@@ -712,14 +726,15 @@ def sliding_time_array_fk_multifreq(st, element, f_bands, t_start=None, t_end=No
             T, B, V, S = sliding_time_array_fk(st, element, tstart=t_start, tend=t_end, win_len=win_len, win_frac=win_frac, 
                                                frqlow=frqlow, frqhigh=frqhigh,
                                                sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y, sl_s=sl_s,
-                                               sl_corr=sl_corr)
+                                               sl_corr=sl_corr, use_geographic_coords=use_geographic_coords)
             T_all.append(T); B_all.append(B); V_all.append(V); S_all.append(S)
         else:
             dask_out = dask.delayed(sliding_time_array_fk)(st, element, tstart=t_start, tend=t_end, 
                                                            win_len=win_len, win_frac=win_frac, 
                                                            frqlow=frqlow, frqhigh=frqhigh,
                                                            sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, 
-                                                           slm_y=slm_y, sl_s=sl_s, sl_corr=sl_corr)
+                                                           slm_y=slm_y, sl_s=sl_s, sl_corr=sl_corr,
+                                                           use_geographic_coords=use_geographic_coords)
             dask_all.append(dask_out)
 
     if n_workers > 1:
@@ -755,7 +770,7 @@ def sliding_time_array_fk_multifreq(st, element, f_bands, t_start=None, t_end=No
 
 def sliding_time_array_fk(st, element, tstart=None, tend=None, win_len=20, win_frac=0.5, frqlow=0.5, frqhigh=4,
                           sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18, sl_corr=[0.,0.],
-                          normalize_waveforms=True):
+                          normalize_waveforms=True, use_geographic_coords=True):
     '''
     Processes st with sliding window FK analysis. Default parameters are suitable for most
     regional infrasound arrays.
@@ -770,11 +785,12 @@ def sliding_time_array_fk(st, element, tstart=None, tend=None, win_len=20, win_f
         tstart = 1
         tend = (tr.stats.npts * tr.stats.delta)-1
     
-    for st_i in st:
-        st_i.stats.coordinates = AttribDict({
-            'latitude': st_i.stats.sac.stla,
-            'elevation': 0.,
-            'longitude': st_i.stats.sac.stlo})
+    if use_geographic_coords:
+        for st_i in st:
+            st_i.stats.coordinates = AttribDict({
+                'latitude': st_i.stats.sac.stla,
+                'elevation': 0.,
+                'longitude': st_i.stats.sac.stlo})
 
     kwargs = dict(
             # slowness grid: X min, X max, Y min, Y max, Slow Step
@@ -1084,7 +1100,8 @@ def add_beam_to_stream(st, beam, ref_station):
 
 def plotFK(st, startTime, endTime, frqlow, frqhigh,
            sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18,
-           plot=True, normalize=True, sl_corr=[0.,0.]):
+           plot=True, normalize=True, sl_corr=[0.,0.], show_peak=False,
+           cmap='viridis'):
     '''
     Computes and displays an FK plot for an ObsPy Stream object, st, given
     a start time and end time (as UTCDateTime objects) and a frequency band
@@ -1195,10 +1212,13 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
     if plot:
         plt.pcolormesh(np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[0],
                        np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[1],
-                       np.flipud(np.fliplr(relpow_map.transpose())))
+                       np.flipud(np.fliplr(relpow_map.transpose())),
+                       cmap=cmap)
         plt.xlim(sll_x,slm_x)
         plt.ylim(sll_y,slm_y)
         plt.plot(0, 0, 'w+')
+        if show_peak:
+            plt.plot(-slow_x, -slow_y, 'w*')
         plt.xlabel('Slowness (x) s/km')
         plt.ylabel('Slowness (y) s/km')
         plt.title('Peak semblance at ' + str(round(baz % 360., 2)) + ' degrees ' + str(round(1/slow, 2)) + ' km/s')
