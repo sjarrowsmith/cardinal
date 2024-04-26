@@ -6,6 +6,7 @@
 
 import numpy as np
 import pandas as pd
+import matplotlib as plt
 from array_analysis import *
 from obspy.core import AttribDict
 from pyproj import Geod
@@ -19,7 +20,7 @@ from dask.distributed import Client
 from tqdm import tqdm
 warnings.filterwarnings("ignore")
 
-def polar_plot_families(families, r_axis='velocity'):
+def polar_plot_families(families, r_axis='velocity', f_lim=[0,2]):
     '''
     Produces a summary polar plot of all families
 
@@ -48,7 +49,7 @@ def polar_plot_families(families, r_axis='velocity'):
         hours.append(mlabdatetime.hour + mlabdatetime.minute/60)
 
     if r_axis == 'velocity':
-        cm = ax.scatter(theta, mean_vel, s=bandwidth/4, c=mean_freq, vmin=0, vmax=2)
+        cm = ax.scatter(theta, mean_vel, s=bandwidth/4, c=mean_freq, vmin=f_lim[0], vmax=f_lim[1])
         plt.colorbar(cm)
         ax.set_rlim([0.0,0.8])
         plt.title('r-axis: trace velocity, color: frequency, size: Bandwidth')
@@ -121,11 +122,15 @@ def load_sliding_window_multifreq(fname):
 
     return st, f_bands, T, B, V, S
 
+
 def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None, event_window=None, bandpass=None,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight', cmap_sequential='pink_r',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
-                                  ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None):
+                                  ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None, s_line=None):
+    
+
+
     '''
     Plots the results of sliding-window array processing that span multiple frequency bands
 
@@ -160,7 +165,6 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
 
     S_filt = S.copy()
 
-    
     if (pixels_in_families is not None) and (ix is not None):
         # Set all semblances to zero where the pixel is not in a family:
         x = np.zeros(S.shape)
@@ -169,13 +173,14 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
 
     tr = st.select(station=element)[0]
     start_time_string = str(tr.stats.starttime).split('.')[0].replace('T',' ')
-    fig, ax = plt.subplots(figsize=figsize)
-    ax1 = plt.subplot(3,1,1)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True)
+
     t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
-    
+
     if title is not None:
         plt.title(title+ ": Bandpass " + str(bandpass))
-    
+
     #creating time window
     if event_window is not None:
         dist= event_window[0]
@@ -190,94 +195,88 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
         plt.axvline(event_time, c= 'r')
         plt.axvline(arrival_1, c= 'g')
         plt.axvline(arrival_2, c= 'g')
-    
-    
+
+
     if (bandpass is None):
         pass
     else:
         tr.filter('bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
-    
+
     t_tr, y = fix_lengths(t_tr, tr.data)
 
     if plot_real_amplitude:
-        plt.plot(t_tr, y, 'k-')
-        plt.ylabel(amplitude_units)
+        ax1.plot(t_tr, y, 'k-')
+        ax1.set_ylabel(amplitude_units)
     else:
-        plt.plot(t_tr, y/np.max(np.abs(y)), 'k-')
+        ax1.plot(t_tr, y/np.max(np.abs(y)), 'k-')
         ax1.tick_params(labelleft=False)
+    if s_line:
+        for s_line_i in s_line:
+            ax1.axvline(s_line_i)
     ax1.tick_params(labelbottom=False)
 
-    ax2 = plt.subplot(3,1,2, sharex=ax1)
     ax2.tick_params(labelbottom=False)
     ix = np.where(S_filt < semblance_threshold)
     B_plt = B.copy()
     B_plt[ix] = None
-    
-    #if clim_baz[0]>clim_baz[1]:
-    #    B_plt=B_plt.copy()
-    #    np.where((B_plt > 0) & (B_plt<clim_baz[0]), B_plt+360, B_plt)
-    #else:
-    #    pass
-    
+
     t_plot = np.hstack((T,T[len(T)-1]+np.diff(T)[0]))
     f_plot = np.hstack((f_bands['fmin'].values, f_bands['fmax'].values[len(f_bands['fmax'])-1]))
     
-    #pcm1 = plt.pcolormesh(T, f_bands['fcenter'].values, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='nearest')
-    pcm1 = plt.pcolormesh(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
+
+
+    pcm1 = ax2.pcolormesh(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
     if clim_baz is not None and clim_baz[0]<clim_baz[1]:
-        plt.clim([clim_baz[0], clim_baz[1]])
+        pcm1.set_clim([clim_baz[0], clim_baz[1]])
     elif clim_baz is not None and clim_baz[0]>clim_baz[1]:
-        plt.clim([clim_baz[0], clim_baz[1]+360])
-    plt.ylabel('Freq. (Hz)')
+        pcm1.set_clim([clim_baz[0], clim_baz[1]+360])
+    ax2.set_ylabel('Freq. (Hz)')
     if log_freq:
-        plt.yscale('log')
+        ax2.set_yscale('log')
 
     if plot_trace_vel:
-        ax3 = plt.subplot(3,1,3, sharex=ax1, sharey=ax2)
         V_plt = V.copy()
         V_plt[ix] = None
-        #pcm2 = plt.pcolormesh(T, f_bands['fcenter'].values, V_plt, cmap=plt.get_cmap('pink_r'), shading='nearest')
-        pcm2 = plt.pcolormesh(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
+        pcm2 = ax3.pcolormesh(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
         if clim_vtr is not None:
-            plt.clim([clim_vtr[0], clim_vtr[1]])
-        plt.ylabel('Freq. (Hz)')
-        plt.xlabel('Time (s) after ' + start_time_string)
+            pcm2.set_clim([clim_vtr[0], clim_vtr[1]])
+        ax3.set_ylabel('Freq. (Hz)')
+        ax3.set_xlabel('Time (s) after ' + start_time_string)
         if log_freq:
-            plt.yscale('log')
+            ax3.set_yscale('log')
     else:
         # Plotting semblance
-        ax3 = plt.subplot(3,1,3, sharex=ax1, sharey=ax2)
-        #pcm2 = plt.pcolormesh(T, f_bands['fcenter'].values, S, cmap=plt.get_cmap('pink_r'), shading='nearest')
-        pcm2 = plt.pcolormesh(t_plot, f_plot, S, cmap=plt.get_cmap(cmap_sequential), shading='flat')
-        plt.clim([0,1])
-        plt.ylabel('Freq. (Hz)')
-        plt.xlabel('Time (s) after ' + start_time_string)
+        ax3 = plt.subplot(3,1,3)
+        ax3.tick_params(labelbottom=True)
+        pcm2 = ax3.pcolormesh(t_plot, f_plot, S, cmap=plt.get_cmap(cmap_sequential), shading='flat')
+        pcm2.set_clim([0,1])
+        ax3.set_ylabel('Freq. (Hz)')
+        ax3.set_xlabel('Time (s) after ' + start_time_string)
         if log_freq:
-            plt.yscale('log')
-    
+            ax3.set_yscale('log')
+
     if twin_plot is not None:
         plt.xlim(twin_plot)
     else:
         plt.xlim([t_tr[0], t_tr[len(t_tr)-1]])
-    
+
     if f_lim is not None:
         plt.ylim(f_lim)
 
-    
     # Manually adding colorbars:
     fig.subplots_adjust(right=0.85)
     cbar_ax = fig.add_axes([0.86, 0.386, 0.02, 0.22])
     fig.colorbar(pcm1, cax=cbar_ax)
     cbar_ax.set_ylabel('Azimuth (deg.)')
     cbar_ax.locator_params(nbins=6)
-    
+
     if clim_baz is not None:
         if clim_baz[0]>clim_baz[1]:
             tick_labels= np.array(cbar_ax.get_yticks())
             tick_labels= tick_labels.astype(int)
             new_labels=(np.where((tick_labels > 360), tick_labels-360, tick_labels))
             cbar_ax.set_yticklabels(new_labels)
-    
+
     cbar_ax = fig.add_axes([0.86, 0.113, 0.02, 0.22])
     fig.colorbar(pcm2, cax=cbar_ax)
     cbar_ax.locator_params(nbins=5)
@@ -285,7 +284,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
         cbar_ax.set_ylabel('Velocity (km/s)')
     else:
         cbar_ax.set_ylabel('Semblance')
-    
+
     if fname_plot is not None:
         plt.savefig(fname_plot)
 
@@ -302,7 +301,7 @@ def fix_lengths(t, y):
     return t_out, y_out
 
 def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
-                        semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5)):
+                        semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5),):
     '''
     Plots the results of sliding-window array processing
     
@@ -389,7 +388,8 @@ def make_custom_fbands(f_min=0.01, f_max=50, win_min=3, win_max=200, overlap=0.1
             win = m * (1/fcenter) + b
             step = win * overlap
             f_min = fmax
-            f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
+            f_bands = pd.concat([f_bands, pd.DataFrame([{'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}])], ignore_index=True)
+            #f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
     elif type == 'octave':
         i = 0
         while f_min * 2 <= f_max:
@@ -400,7 +400,8 @@ def make_custom_fbands(f_min=0.01, f_max=50, win_min=3, win_max=200, overlap=0.1
             win = m * (1/fcenter) + b
             step = win * overlap
             f_min = fmax
-            f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
+            f_bands = pd.concat([f_bands, pd.DataFrame([{'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}])], ignore_index=True)
+            #f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
     elif type == 'decade':
         i = 0
         while f_min * 10 <= f_max:
@@ -411,7 +412,8 @@ def make_custom_fbands(f_min=0.01, f_max=50, win_min=3, win_max=200, overlap=0.1
             win = m * (1/fcenter) + b
             step = win * overlap
             f_min = fmax
-            f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
+            f_bands = pd.concat([f_bands, pd.DataFrame([{'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}])], ignore_index=True)
+            #f_bands = f_bands.append({'band': i, 'fmin': fmin, 'fcenter': fcenter, 'fmax': fmax, 'win': win, 'step': step}, ignore_index=True)
     
     return f_bands
 
@@ -478,7 +480,8 @@ def extend_pmcc_fbands(f_bands, fmax):
         band_ix = band_ix + 1
         win = m_win*(1/f_cen) + b_win
         step = win*0.1
-        f_bands = f_bands.append({'band': band_ix, 'fmin': f_min, 'fcenter': f_cen, 'fmax': f_max, 'win': win, 'step': step}, ignore_index=True)
+        f_bands = pd.concat([f_bands, pd.DataFrame([{'band': band_ix, 'fmin': f_min, 'fcenter': f_cen, 'fmax': f_max, 'win': win, 'step': step}])], ignore_index=True)
+        #f_bands = f_bands.append({'band': band_ix, 'fmin': f_min, 'fcenter': f_cen, 'fmax': f_max, 'win': win, 'step': step}, ignore_index=True)
         f_max_moving = f_max
     
     return f_bands
