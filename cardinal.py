@@ -171,7 +171,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
         x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
         S_filt[x == 0] = 0
 
-    tr = st.select(station=element)[0]
+    tr = st.select(station=element)[0].copy()
     start_time_string = str(tr.stats.starttime).split('.')[0].replace('T',' ')
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True)
