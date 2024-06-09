@@ -54,9 +54,9 @@ def polar_plot_families(families, r_axis='velocity', f_lim=[0,2]):
         ax.set_rlim([0.0,0.8])
         plt.title('r-axis: trace velocity, color: frequency, size: Bandwidth')
     elif r_axis == 'hour':
-        cm = ax.scatter(theta, np.array(hours), s=bandwidth/4, c=start_time)
+        cm = ax.scatter(theta, np.array(hours), s=bandwidth/4, c=mean_freq, vmin=f_lim[0], vmax=f_lim[1])
         plt.colorbar(cm)
-        plt.title('r-axis: Hour of day, color: Start time (days), size: Bandwidth')
+        plt.title('r-axis: Hour of day, color: frequency, size: Bandwidth')
     plt.show()
 
 def read_families_from_db(dbname):
@@ -179,7 +179,7 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
 
     if title is not None:
-        plt.title(title+ ": Bandpass " + str(bandpass))
+        ax1.set_title(title+ ": Bandpass " + str(bandpass))
 
     #creating time window
     if event_window is not None:
