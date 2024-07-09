@@ -18,6 +18,9 @@ import networkx as nx
 import warnings, utm, io, dask, pickle, sqlite3, os, pdb
 from dask.distributed import Client
 from tqdm import tqdm
+from scipy.integrate import cumtrapz
+from scipy.interpolate import interp1d
+from sklearn.neighbors import KernelDensity
 warnings.filterwarnings("ignore")
 
 def polar_plot_families(families, r_axis='velocity', f_lim=[0,2]):
@@ -127,7 +130,8 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
                                   semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight', cmap_sequential='pink_r',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
-                                  ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None, s_line=None):
+                                  ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None, s_line=None,
+                                  p_threshold=None):
     
 
 
@@ -161,7 +165,10 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     - ix is the indices of frequencies, times where semblance > threshold
     - pixels_in_families is a Numpy array of all unique pixel ID's that are in families
     - fname_plot is an optional filename to save the plot to
+    - p_threshold is the percentile threshold for adaptive semblance threshold in each f band using KDE and CDF
     '''
+
+    print('got to here')
 
     S_filt = S.copy()
 
@@ -216,7 +223,37 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     ax1.tick_params(labelbottom=False)
 
     ax2.tick_params(labelbottom=False)
-    ix = np.where(S_filt < semblance_threshold)
+
+
+    if p_threshold is not None:
+        p_threshold = 1 - p_threshold
+
+        adaptive_S_f_bands = f_bands.copy() 
+        semblance_values = []
+
+        for i in range(adaptive_S_f_bands.shape[0]):
+            row = S_filt[i]
+            row = np.ravel(row)
+            kde = KernelDensity(bandwidth=0.01, kernel='gaussian')
+            kde.fit(row[:, None])
+            x = np.linspace(0, 1, 1000)
+            log_density = kde.score_samples(x[:, None])
+            density = np.exp(log_density)
+            cdf = cumtrapz(density, x, initial=0)
+            interp_cdf = interp1d(cdf, x, bounds_error=False, fill_value=(x[0], x[-1]))
+            semblance_percentile = interp_cdf(p_threshold)
+            semblance_values.append(semblance_percentile)
+        #adaptive_S_f_bands['semblance_threshold'] = semblance_values
+        #adaptive_S_matrix = np.full(S_filt.shape, np.nan)
+
+        #for i in range(S_filt.shape[0]):
+        #    threshold = semblance_values[i]
+        #    if S_filt[i] is not None:
+        #        mask = S_filt[i] >= threshold
+        #        adaptive_S_matrix[i, mask] = S_filt[i, mask]
+        ix = np.where(S_filt < np.array(semblance_values)[:, None])
+    else:
+        ix = np.where(S_filt < semblance_threshold)
     B_plt = B.copy()
     B_plt[ix] = None
 
@@ -527,7 +564,7 @@ def compute_all_distances_for_pixel(i, ix, T_ix, F_ix, B_ix, sigma_t=2, sigma_f=
     return distances
 
 def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, min_pixels=6,
-                  sigma_t=2, sigma_f=2, sigma_b=10, n_forward=200):
+                  sigma_t=2, sigma_f=2, sigma_b=10, n_forward=200, p_threshold=None):
     '''
     Makes families by applying a semblance threshold and clustering resultant pixels based
     on weighted distance
@@ -546,6 +583,7 @@ def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, mi
     sigma_f - Standard deviation in frequency indices for clustering
     sigma_b - Standard deviation in backazimuth for clustering
     n_forward - Number of pixels after a pixel (in time) to compute weighted distances
+    p_threshold - Percentile threshold for adaptive semblance threshold
 
     Outputs:
     ix - Indices of frequencies, times where semblance > threshold
@@ -557,11 +595,39 @@ def make_families(T, B, V, S, f_bands, ref_time, threshold=0.6, dist_thres=1, mi
     x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
     '''
     
-    # Extracting pixels, and associated parameters, above the semblance threshold:
-    ix = np.where(S>=threshold)
+    if p_threshold is not None:
+        p_threshold = 1 - p_threshold
+
+        adaptive_S_f_bands = f_bands.copy() 
+        semblance_values = []
+
+        for i in range(adaptive_S_f_bands.shape[0]):
+            row = S[i]
+            row = np.ravel(row)
+            kde = KernelDensity(bandwidth=0.01, kernel='gaussian')
+            kde.fit(row[:, None])
+            x = np.linspace(0, 1, 1000)
+            log_density = kde.score_samples(x[:, None])
+            density = np.exp(log_density)
+            cdf = cumtrapz(density, x, initial=0)
+            interp_cdf = interp1d(cdf, x, bounds_error=False, fill_value=(x[0], x[-1]))
+            semblance_percentile = interp_cdf(p_threshold)
+            semblance_values.append(semblance_percentile)
+        #adaptive_S_f_bands['semblance_threshold'] = semblance_values
+        #adaptive_S_matrix = np.full(S.shape, np.nan)
+
+        #for i in range(S.shape[0]):
+        #    semblance = semblance_values[i]
+        #    if S[i] is not None:
+        #        mask = S[i] <= semblance
+        #        adaptive_S_matrix[i, mask] = S[i, mask]
+        ix = np.where(S >= np.array(semblance_values)[:, None])
+    else:
+        ix = np.where(S >= threshold)
+
     S_ix = S[ix]; B_ix = B[ix]; V_ix = V[ix]
     F_ix = f_bands['fcenter'].values[ix[0]]; T_ix = T[ix[1]]
-    pixel_ids = np.arange(0, len(ix[0]))    # A list of unique pixel ID's
+    #pixel_ids = np.arange(0, len(ix[0]))    # A list of unique pixel ID's
 
     # Splitting ix into an index on frequency (ix_f) and an index on time (ix_t):
     ix_f = ix[0]; ix_t = ix[1]
