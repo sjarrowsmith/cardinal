@@ -127,7 +127,7 @@ def load_sliding_window_multifreq(fname):
 
 
 def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None, event_window=None, bandpass=None,
-                                  semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1],
+                                  semblance_threshold=1e-6, clim_baz=None, clim_vtr=[0,1],
                                   plot_trace_vel=False, log_freq=False, cmap_cyclic='twilight', cmap_sequential='pink_r',
                                   twin_plot=None, f_lim=None, plot_real_amplitude=False, amplitude_units='Pa',
                                   ix=None, pixels_in_families=None, figsize=(9,5), fname_plot=None, s_line=None,
