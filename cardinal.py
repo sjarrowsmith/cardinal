@@ -168,8 +168,6 @@ def plot_sliding_window_multifreq(st, element, f_bands, T, B, V, S, title= None,
     - p_threshold is the percentile threshold for adaptive semblance threshold in each f band using KDE and CDF
     '''
 
-    print('got to here')
-
     S_filt = S.copy()
 
     if (pixels_in_families is not None) and (ix is not None):
