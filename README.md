@@ -1,15 +1,27 @@
-# cardinal
+# Cardinal
 Seismic and geoacoustic array processing
 
 ## Installing
-To install Cardinal:<br/>
-conda env create -f environment.yml<br/>
-(and marvel at the number of dependencies this builds on!)
+To install and activate Cardinal:
+Navigate to Cardinal directory
+- conda env create -f cardinal_env.yml
+- conda activate cardinal or source activate cardinal
+- pip install tensorflow==2.19.0
 
-## Activating
-To activate the Cardinal environment<br/>
-source activate cardinal
+If you encounter conflicts during install, run these first:
+- conda config --add channels conda-forge
+- conda config --add channels defaults
+- conda config --set channel_priority flexible
 
-## Examples and Documentation
-Open run_cardinal.ipynb in a Jupyter notebook for a Quick Start<br/>
-Open cardinal_usersguide.ipynb in a Jupyter notebook for more details on code and algorithms
+## Run Cardinal (defaults to Jupyter Notebook)
+Navigate to Cardinal directory
+- jupyter nbclassic&
+
+## Examples
+The notebook provided, 1_Bolide_Infrasound.ipynb, outlines how to implement Cardinal's algorithm on example bolide events.
+
+## Algorithm
+1. Segmentor
+2. Adaptive Array
+3. Array Processor
+4. Aggregator

@@ -25,7 +25,7 @@ import math
 import warnings
 
 import numpy as np
-from scipy.integrate import cumtrapz
+from scipy.integrate import cumulative_trapezoid
 
 from obspy.core import Stream
 from obspy.signal.headers import clibsignal
