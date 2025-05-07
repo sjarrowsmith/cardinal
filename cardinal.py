@@ -3080,7 +3080,7 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
     grdpts_x = int(((slm_x - sll_x) / sl_s + 0.5) + 1)
     grdpts_y = int(((slm_y - sll_y) / sl_s + 0.5) + 1)
 
-    geometry = get_geometry(stream, coordsys=coordsys, verbose=verbose)
+    geometry = get_geometry(stream, coordsys=coordsys)
 
     time_shift_table = get_timeshift(geometry, sll_x, sll_y,
                                      sl_s, grdpts_x, grdpts_y)
