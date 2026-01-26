@@ -39,10 +39,11 @@ from scipy.stats import linregress
 from scipy.spatial import KDTree
 from pisces.tables.css3 import Wfdisc
 from scipy.interpolate import interp1d
-from scipy.spatial.distance import cdist
 from scipy.ndimage import gaussian_filter
+from scipy.spatial.distance import cdist, pdist
 from scipy.integrate import cumulative_trapezoid
 from matplotlib.collections import LineCollection
+from scipy.cluster.hierarchy import linkage, dendrogram
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap, Normalize
 
@@ -521,9 +522,6 @@ def make_synthetic_array(num_stns=10, small_arr_extent=0.2, large_arr_extent=5, 
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-from scipy.cluster.hierarchy import linkage, dendrogram
-from scipy.spatial.distance import pdist
-
 def find_optimal_clusters(linked):
     '''---------------------------------------------------------------------------------------------------------
     Finds optimal number of clusters from dendrogram to be used for Adaptive Array
@@ -551,7 +549,7 @@ def find_optimal_clusters(linked):
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def element_pair_distances(st, plot=False, grid_linewidth=0.5, return_params=False, figsize=(12,6)):
+def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6)):
     '''---------------------------------------------------------------------------------------------------------
     Calculates distance (in km) between each pair of elements in an array and plots dendrogram.
     Used to determine number of clusters for adaptive array.
@@ -566,6 +564,9 @@ def element_pair_distances(st, plot=False, grid_linewidth=0.5, return_params=Fal
     Output:
         stn_dist_sort (array): element-pair distances sorted from min to max (in km)
         pairs (list): list of station pairs
+        k (int): suggested number of clusters for Adaptive Array
+
+    Note: Only use to determine suggested number of clusters if > 4 sensors in array
     ---------------------------------------------------------------------------------------------------------'''
     # X = get_geometry(st)
     X, stnm = get_array_coords(st, st[0].stats.station, units='km')
@@ -622,8 +623,8 @@ def element_pair_distances(st, plot=False, grid_linewidth=0.5, return_params=Fal
         plt.xlabel('Element Pair')
         plt.grid(linewidth=grid_linewidth)
         plt.title('Element Pair Distance')
-    if return_params == True:
-        return stn_dist_sort, pairs
+    
+    return stn_dist_sort, pairs, k
 
 '--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -1193,8 +1194,7 @@ def adaptive_array(st, f_bands, array_type, n_clusters=None, plot=False, figsize
         st_subarrays (list): a list of ObsPy stream objects containing data for each subarray
         optimal_subarray_stnms (list): list of station names for each subarray
 
-    Note: Use optimal_subarray_stnms as input to retrieve_subarray_data() for batch processing or processing data in real-time,
-    this way you don't need to re-run the adaptive_array for each new batch of array data (check notebook for example implementation)
+    Note: Only use if array has > 4 sensors
     ----------------------------------------------------------------------------------------------------------'''
     # Load RC ConvFormer
     tf.keras.config.enable_unsafe_deserialization() # to allow unsafe deserialization
@@ -1272,7 +1272,7 @@ def adaptive_array(st, f_bands, array_type, n_clusters=None, plot=False, figsize
     #-----------------------------------------------------------------------------------------------------------------#
     # Calculate and sort by RC
     RC = []; subarray_stnms = []
-    dbscan_dist_thresh = np.std(element_pair_distances(st, return_params=True)[0]) # here we set the outlier distance threshold (in km) used to identify outlier stations in subarrays
+    dbscan_dist_thresh = np.std(clusters(st)[0]) # here we set the outlier distance threshold (in km) used to identify outlier stations in subarrays
     dbscan_dist_thresh *= 1000 # convert to meters
     if array_type=='seismic':
         scaler_geometry = X_seismic_scaler
@@ -1784,12 +1784,6 @@ def sliding_time_array_fk_multifreq_tblock(st, f_bands, client, t_start=None, t_
 
     Note: This should only be used on large amounts of data at least some hours long
     ---------------------------------------------------------------------------------------------------------'''
-    # Slowness grid
-    if signal_type == 'infrasound':
-        sll_x=-3.6; slm_x=3.6; sll_y=-3.6; slm_y=3.6; sl_s=0.18
-    elif signal_type == 'seismic':
-        sll_x=-0.5; slm_x=0.5; sll_y=-0.5; slm_y=0.5; sl_s=0.01
-    #-----------------------------------------------------------------------------------------------------------------#
     # Specify n_workers > 1 to use parallel computing
     n_workers = len(client.scheduler_info()["workers"])
     if n_workers == 1:
@@ -2295,7 +2289,7 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
         max_percentage (float/int): percentage to use for taper
         max_length (float/int): length to use for taper
         remove_stations (list): each entry is station name to remove from array
-        convert_to_units (list): the value necessary to convert counts to units (Pa, m/s, etc.), assumes units of Pa/counts (if it's counts/Pa input value as 1/convert_to_units)
+        convert_units (list): the value necessary to convert counts to units (Pa, m/s, etc.), assumes units of Pa/counts (if it's counts/Pa input value as 1/convert_to_units)
         plot (boolean): whether to plot array data
         equal_scale (boolean): whether to make each trace the same scale in plot
         interpolate_gaps (boolean): whether to interpolate gaps in array data
@@ -2362,8 +2356,11 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
     #-----------------------------------------------------------------------------------------------------------------#
     # Trimming stream
     if trim_stream is not None:
-        dt = st[0].stats.starttime
-        st.trim(dt+trim_stream[0], dt+trim_stream[1])
+        try: # for seconds as input
+            dt = st[0].stats.starttime
+            st.trim(dt+trim_stream[0], dt+trim_stream[1])
+        except: # for UTC time as input
+            st.trim(trim_stream[0], trim_stream[1])
     #-----------------------------------------------------------------------------------------------------------------#
     # Interpolating to fix data gaps
     if interpolate_gaps:
@@ -3002,7 +2999,7 @@ def plot_source_receiver_map(ev_lat, ev_lon, arr_lat, arr_lon, extent=[122.5, 13
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m'):
+def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m', fname_plot=None):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Plots the array coordinates
 
@@ -3029,7 +3026,10 @@ def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m')
         plt.xlim(x_lim)
     if y_lim is not None:
         plt.ylim(y_lim)
-
+    #-----------------------------------------------------------------------------------------------------------------#
+    if fname_plot is not None:
+        fig.savefig(fname_plot)
+        
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plotFK(st, startTime, endTime, frqlow, frqhigh,
@@ -3169,6 +3169,7 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
     # points are now starting at top-left in row major
     return np.fliplr(relpow_map.transpose()), baz % 360, 1. / slow
 
+
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
@@ -3237,6 +3238,10 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5.,
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plot_sliding_window_multifreq(st, f_bands, T, B, V, S, 
+                                ############### Subplots ########################################################
+                                waveform_subplot=True, baz_subplot=True, vel_subplot=True, sem_plot=True, spec_subplot=False,
+                                scal_subplot=False,
+
                                 ############### Time-series #####################################################
                                 normalize=False, beamform_data=False, bandpass=[0.5,5], taper='cosine', 
                                 max_percentage=0.05, max_length=60, amp_units='Amplitude', legend_loc='upper right', 
@@ -3253,6 +3258,14 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
                                 compute_metrics=False, trim_family_window=None, window='hann', nperseg=2**8, noverlap_percent=50, 
                                 noise_start=10, db_units=True, PSD_xlim=None, PSD_ylim=None, PSD_title=None,
 
+                                ############### Spectrogram ##################################################
+                                spec_cmap='viridis', v_lim=None, # use the same nperseg and noverlap_percent as in the PSD
+
+                                ############### Scalogram ####################################################
+                                scale_range=[1,5500], scale_res=200, wavelet='cmor2.25-2.75',
+                                scal_log_normalize=True, scal_cmap='seismic',
+                                scal_v_lim=None, use_filtered_data=False,
+
                                 ############### Plotting params #################################################
                                 title=None, figsize=(9,6), fname_plot=None, fname_plot_PSD=None):
     '''----------------------------------------------------------------------------------------------------------------------------------
@@ -3265,6 +3278,11 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         B (array): backazimuths of length [NB, NT] where NB is the number of frequency bands
         V (array): phase/trace velocities of length [NB, NT]
         S (array):semblances of length [NB, NT]
+        waveform_subplot (boolean): whether to plot time-series data (defaults to True)
+        baz_subplot (boolean): whether to plot back azimuths (defaults to True)
+        vel_subplot (boolean): whether to plot trace velocity (defaults to True)
+        sem_plot (boolean): whether to plot semblance (defaults to False)
+        spec_subplot (boolean): whether to plot spectrogram
         normalize (boolean): whether to normalize time-series recording
         beamform_data (booelan): whether to beamform the data and plot
         bandpass (list): frequency range to use to bandpass time-series data (defaults to [0.5,5])
@@ -3292,7 +3310,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         f_lim (list): range in frequencies to plot
         GT_baz (float/int): ground truth back azimuth - specified only if you want to plot deviation (clim_baz turns into plus/minus deviation)
         compute_metrics (boolean): whether to produce PSD plot and calculate average SNR, beam SNR, absolute peak beam amplitude, and peak-to-peak amplitude (results will be displayed in title)
-        trim_family_window (list): both inputs decrease family window size relative to the start (similar to t_lim)
+        trim_family_window (list): both inputs decrease family window size relative to the start (in seconds or UTC)
         window (str): desired window to use for PSD (defaults to hann)
         nperseg (int): length of each segment used for PSD (defaults to 256 - same as signal.welch())
         noverlap_percent (int): percent overlap between segments (defaults to 50% - same as signal.welch())
@@ -3301,6 +3319,8 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         PSD_xlim (list): frequency limits on PSD plot (defaults to [minimum frequency in f_bands, Nyquist frequency])
         PSD_ylim (list): power spectral limits on PSD plot
         PSD_title (str): title of PSD plot (defaults to "Power Spectral Density")
+        spec_cmap (str): colormap to be used for spectrogram
+        v_lim (list): limits for spectrogram colorbar (defaults to None)
         title (str): title of array processing plot
         figsize (tuple): specifies size of figure
         fname_plot (str): filename to save array processing plot
@@ -3308,177 +3328,278 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
     Output:
         st_beam: ObsPy stream object where first element is beamformed trace (only returns if return_beam = True)
+        Plot: up to 5 vertically stacked subplots with time-series (raw or beamformed), spectrogram, back azimuth, trace velocity, and semblance
     ----------------------------------------------------------------------------------------------------------------------------------'''
-    # For plotting families
+    # Mask the semblance field based on specified families (for selective plotting)
     S_filt = S.copy()
     if (pixels_in_families is not None) and (ix is not None):
-        # Set all semblances to zero where the pixel is not in a family:
+        # Construct binary mask where pixels part of a family are 1, others 0
         x = np.zeros(S.shape)
-        x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
-        S_filt[x == 0] = 0
-        ix = np.where(S_filt < 1e-6)
-    elif (pixels_in_families == None) and (ix == None):
+        x[ix[0][pixels_in_families], ix[1][pixels_in_families]] = 1
+        S_filt[x == 0] = 0  # Remove semblance values not in families
+        ix = np.where(S_filt < 1e-6)  # Update pixel index mask
+    elif (pixels_in_families is None) and (ix is None):
+        # Default filtering: threshold semblance globally
         ix = np.where(S_filt < semblance_threshold)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Plotting time-series
+
+    # Extend time and frequency vectors for pcolor-style plotting
+    t_plot = np.hstack((T, T[-1] + np.diff(T)[0]))  # Right edge of time bins
+    f_plot = np.hstack((f_bands['fmin'].values, f_bands['fmax'].values[-1]))  # Right edge of freq bands
+
+    # Determine which subplots are active
+    if spec_subplot and scal_subplot:
+        raise ValueError("Choose only one: spec_subplot or scal_subplot.")
+    tf_subplot = (spec_subplot or scal_subplot)
+    subplots_requested = [waveform_subplot, tf_subplot, baz_subplot, vel_subplot, sem_plot]
+    n_subplots = sum(subplots_requested)
+
+    # Create figure and initial subplot indexing
     fig = plt.figure(figsize=figsize)
-    ax1 = fig.add_subplot(4,1,1)
-    # Filter
-    if bandpass is not None:
+    subplot_idx = 1
+    ax_dict = {}  # Keep track of axes by type
+    freq_share_ax = None  # Will be used to synchronize y-axes (for non-waveform plots)
+    # --------------------------- WAVEFORM SUBPLOT ---------------------------
+    if waveform_subplot:
+        ax1 = fig.add_subplot(n_subplots, 1, subplot_idx)
+        ax_dict['waveform'] = ax1
+        subplot_idx += 1
+
+        # Apply taper and bandpass filtering to raw stream
         st_taper = st.copy()
         st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
         st_filt = st_taper.copy()
         try:
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
         except:
+            # If merged stream fails, split and remerge
             st_filt = st_taper.copy().split()
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
-            st_filt = st_filt.merge() 
-    # Plot single array element as time-series
-    if beamform_data == False:
-        if element is not  None:
-            tr = st_filt.select(station=element)[0].copy()
+            st_filt = st_filt.merge()
+
+        if not beamform_data:
+            # Plot single trace from selected element
+            tr = st_filt.select(station=element)[0] if element else st_filt[0]
+            t_tr = np.arange(0, tr.stats.npts * tr.stats.delta, tr.stats.delta)
+            t, data = t_tr, tr.data
+            if normalize:
+                data = data / np.max(np.abs(data))
+            ax1.plot(t, data, 'k-', label=tr.stats.station)
         else:
-            tr = st_filt.select(station=st_filt[0].stats.station)[0].copy()
-        t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
-        t, data = fix_lengths(t_tr, tr.data)
-        if normalize == True:
-            data = data / np.max(np.abs(data))
-        ax1.plot(t, data, 'k-', label=tr.stats.station)
-    # Plot beam as time-series
-    elif beamform_data == True:
-        # Use Aggregator output to beamform (families table)
-        if (families is not None) and (families_table == None):
-            families_table = df_families(st[0].stats.starttime.matplotlib_date, families)
-        elif (families == None) and (families_table is not None):
-            pass
-        elif (families == None) and (families_table == None):
-            raise Exception('If beamforming, families or families_table must be specified.')
-        # Choose family (either user defined or defaults to family with max semb)
-        if family_idx is not None:
-            baz = families_table['mean_baz'][family_idx]
-            vel = families_table['mean_vel'][family_idx]
+            # Beamform the trace across array using selected family slowness
+            if families_table is None:
+                if families is None:
+                    raise Exception('If beamforming, families or families_table must be specified.')
+                families_table = df_families(st[0].stats.starttime.matplotlib_date, families)
+            if family_idx is not None:
+                baz = families_table['mean_baz'][family_idx]
+                vel = families_table['mean_vel'][family_idx]
+            else:
+                family_idx = np.argmax(families_table['max_semb'])  # Default to strongest family
+                baz = families_table['mean_baz'][family_idx]
+                vel = families_table['mean_vel'][family_idx]
+            t_shifts = get_slowness_vector_time_shifts(st_filt, st_filt[0].stats.station, baz=baz, vel=vel, units='km')
+            t_beam, beam_data = beamform(t_shifts, st_filt, st_filt[0].stats.station, normalize_beam=normalize)
+            t, data = t_beam, beam_data
+            ax1.plot(t, data, color='grey', label='Beam')
+
+        # Formatting waveform subplot
+        ax1.set_xlim(t_lim if t_lim else [0, t[-1]])
+        ax1.set_ylim([-1.05, 1.05] if normalize else (amp_lim if amp_lim else [data.min(), data.max()]))
+        ax1.tick_params(labelbottom=False)
+        if (normalize == True) and (amp_lim == None):
+            if len(amp_units.split(' ')) > 1:
+                plt.ylabel('Normalized\n '+ amp_units.split(' ')[0])
+            else:
+                plt.ylabel('Normalized\n '+ amp_units)
+                plt.ylim([-1.05,1.05])
+        elif (normalize == True) and (amp_lim is not None):
+            raise Exception('Y-axis limits are fixed if normalize = True, no need to define amp_lim')
+        elif (normalize == False) and (amp_lim is not None):
+            plt.ylabel(amp_units)
+            plt.ylim(amp_lim)
+        elif (normalize == False) and (amp_lim == None):
+            plt.ylabel(amp_units)
+            plt.ylim([data.min(), data.max()])
+        if delay_times is not None:
+            for x, color in zip(delay_times, ['red', 'green', 'blue']):
+                ax1.axvline(x=x, lw=1, ls='--', color=color)
+
+        # Format title
+        if (title is not None) and (bandpass is not None):
+            ax1_title_obj = ax1.set_title(title+ " - Bandpass: " + str(bandpass))
+        elif (title is not None) and (bandpass == None):
+            ax1_title_obj = ax1.set_title(title)
+        elif (title == None) and (bandpass is not None):
+            ax1_title_obj = ax1.set_title("Bandpass: " + str(bandpass))
+        plt.legend(loc=legend_loc)
+    # --------------------------- TIME-FREQUENCY SUBPLOT (SPEC or SCALO) ---------------------------
+    tf_subplot = (spec_subplot or scal_subplot)
+    if tf_subplot:
+        ax_tf = fig.add_subplot(n_subplots, 1, subplot_idx, sharex=ax_dict.get('waveform'))
+        ax_dict['tf'] = ax_tf
+        if freq_share_ax is None:
+            freq_share_ax = ax_tf
+        subplot_idx += 1
+
+        # Select trace data (beam or single channel)
+        if beamform_data and 'beam_data' in locals():
+            data_tf = beam_data
+            fs_tf = st_filt[0].stats.sampling_rate
+            dt_tf = 1.0 / fs_tf
         else:
-            family_idx = np.where((families_table['max_semb'] == families_table['max_semb'].max()))[0][0] # choose family with max semblance if not specified by user
-            baz = families_table['mean_baz'][family_idx]
-            vel = families_table['mean_vel'][family_idx]
-        t_shifts = get_slowness_vector_time_shifts(st_filt, st_filt[0].stats.station, baz=baz, vel=vel, units='km')
-        t_beam, beam_data = beamform(t_shifts, st_filt, st_filt[0].stats.station, normalize_beam=normalize)
-        t, data = fix_lengths(t_beam, beam_data)
-        ax1.plot(t, data, color='grey', label='Beam')
-    if (normalize == True) and (amp_lim == None):
-        if len(amp_units.split(' ')) > 1:
-            plt.ylabel('Normalized\n '+ amp_units.split(' ')[0])
-        else:
-            plt.ylabel('Normalized\n '+ amp_units)
-        plt.ylim([-1.05,1.05])
-    elif (normalize == True) and (amp_lim is not None):
-        raise Exception('Y-axis limits are fixed if normalize = True, no need to define amp_lim')
-    elif (normalize == False) and (amp_lim is not None):
-        plt.ylabel(amp_units)
-        plt.ylim(amp_lim)
-    elif (normalize == False) and (amp_lim == None):
-        plt.ylabel(amp_units)
-        plt.ylim([data.min(), data.max()])
-    if t_lim is not None:
-        plt.xlim(t_lim)
-    else:
-        plt.xlim([0, t[-1]])
-    ax1.tick_params(labelbottom=False)
-    if delay_times is not None:
-        plt.axvline(x=delay_times[0], lw=1, ls='--', color='red')
-        plt.axvline(x=delay_times[1], lw=1, ls='--', color='green')
-        plt.axvline(x=delay_times[2], lw=1, ls='--', color='blue')
-    if (title is not None) and (bandpass is not None):
-        ax1_title_obj = ax1.set_title(title+ " - Bandpass: " + str(bandpass))
-    elif (title is not None) and (bandpass == None):
-        ax1_title_obj = ax1.set_title(title)
-    elif (title == None) and (bandpass is not None):
-        ax1_title_obj = ax1.set_title("Bandpass: " + str(bandpass))
-    plt.legend(loc=legend_loc)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Plotting back azimuth
-    ax2 = fig.add_subplot(4,1,2, sharex=ax1)
-    if GT_baz is not None:
-        B_dev = B.copy()
-        B_dev -= GT_baz
-        for B_row in range(len(B_dev[:,0])):
-            for B_col in range(len(B_dev[0,:])):
-                if B_dev[B_row, B_col] < -270: 
-                    B_dev[B_row, B_col] += 360
-                elif B_dev[B_row, B_col] > 270:
-                    B_dev[B_row, B_col] -= 360
+            trace_tf = st_filt.select(station=element)[0] if element else st_filt[0]
+            data_tf = trace_tf.data
+            fs_tf = trace_tf.stats.sampling_rate
+            dt_tf = trace_tf.stats.delta
+
+        # Build time vector for TF plot
+        t_tf = np.arange(0, len(data_tf) * dt_tf, dt_tf)
+
+        if spec_subplot:
+            # --- Spectrogram ---
+            noverlap = int(nperseg * (noverlap_percent / 100.0))
+            f_tf, t_spec, Sxx = signal.spectrogram(
+                data_tf, fs=fs_tf, nperseg=nperseg, noverlap=noverlap
+            )
+            Z = np.log10(Sxx + 1e-10)  # log normalize
+
+            pcm_tf = ax_tf.pcolormesh(
+                t_spec, f_tf, Z, cmap=spec_cmap, shading='gouraud',
+                vmin=v_lim[0] if v_lim else None, vmax=v_lim[1] if v_lim else None
+            )
+            ax_tf.set_ylabel('Freq. [Hz]')
+            if log_freq:
+                ax_tf.set_yscale('log')
+
+            bbox = ax_tf.get_position()
+            cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
+            fig.colorbar(pcm_tf, cax=cbar_ax).set_label('Log10[Amplitude²/Hz]')
+            ax_tf.tick_params(labelbottom=False)
+            ax_tf.set_ylim([f_bands['fmin'].min(), f_bands['fmax'].max()])
+
+        elif scal_subplot:
+            # --- Scalogram (CWT) ---
+            # If you want scalogram from filtered/normalized waveform data, use your existing switches.
+            if use_filtered_data:
+                x = data_tf
+                if normalize:
+                    x = x / (np.max(np.abs(x)) + 1e-12)
+            else:
+                # Match your standalone plot_scalogram behavior: tapered unfiltered trace
+                # (Here, we approximate by using st_taper if you created it; else fall back to data_tf)
+                if 'st_taper' in locals():
+                    tr0 = st_taper.select(station=element)[0] if element else st_taper[0]
+                    x = tr0.data
+                    if normalize:
+                        x = x / (np.max(np.abs(x)) + 1e-12)
+                    t_tf = np.arange(0, len(x) * tr0.stats.delta, tr0.stats.delta)
+                    dt_tf = tr0.stats.delta
+                    fs_tf = tr0.stats.sampling_rate
                 else:
-                    pass
-        B_plt = B_dev.copy()
-        if clim_baz is not None:
-            ix_low = np.where(B_plt < clim_baz[0])
-            ix_high = np.where(B_plt > clim_baz[1])
-            B_plt[ix_low] = None; B_plt[ix_high] = None
-        else:
-            pass
-    else:
+                    x = data_tf
+
+            scale = np.geomspace(scale_range[0], scale_range[1], scale_res)
+
+            wv = wavelet
+            if (bandpass is not None) and (wavelet == 'cmor'):
+                center_frequency = (max(bandpass) + min(bandpass)) / 2.0
+                bandwidth = (max(bandpass) - min(bandpass)) / 2.0
+                wv = f"cmor{float(bandwidth)}-{float(center_frequency)}"
+
+            coefs, freqs = pywt.cwt(x, scale, wv, sampling_period=dt_tf)
+            Z = (np.abs(coefs) ** 2)
+
+            if scal_log_normalize:
+                Z = np.log10(Z + 1e-10)
+
+            # optional f_lim cropping (same spirit as your standalone code)
+            if f_lim is not None:
+                fmask = np.where((freqs >= (f_lim[0] - f_lim[0]/10.0)) &
+                                (freqs <= (f_lim[1] + f_lim[1]/10.0)))[0]
+            else:
+                fmask = np.where((freqs >= np.min(freqs)) &
+                                (freqs <= (fs_tf/2.0 + (fs_tf/2.0)/10.0)))[0]
+
+            freqs_plot = freqs[fmask]
+            Z_plot = Z[fmask, :]
+
+            pcm_tf = ax_tf.pcolormesh(
+                t_tf, freqs_plot, Z_plot, cmap=scal_cmap, shading='gouraud',
+                vmin=scal_v_lim[0] if scal_v_lim else None,
+                vmax=scal_v_lim[1] if scal_v_lim else None
+            )
+            ax_tf.set_ylabel('Freq. [Hz]')
+            if log_freq:
+                ax_tf.set_yscale('log')
+
+            bbox = ax_tf.get_position()
+            cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
+            fig.colorbar(pcm_tf, cax=cbar_ax).set_label('Log10\n[Amplitude²]' if scal_log_normalize else '[Amplitude²]')
+            ax_tf.tick_params(labelbottom=False)
+            ax_tf.set_ylim([f_bands['fmin'].min(), f_bands['fmax'].max()])
+
+    # --------------------------- BAZIMUTH SUBPLOT ---------------------------
+    if baz_subplot:
+        ax2 = fig.add_subplot(n_subplots, 1, subplot_idx, sharex=ax_dict.get('waveform'), sharey=freq_share_ax)
+        ax_dict['baz'] = ax2
+        if freq_share_ax is None: freq_share_ax = ax2
+        subplot_idx += 1
         B_plt = B.copy()
-    B_plt[ix] = None
-    t_plot = np.hstack((T,T[len(T)-1]+np.diff(T)[0]))
-    f_plot = np.hstack((f_bands['fmin'].values, f_bands['fmax'].values[len(f_bands['fmax'])-1]))
-    pcm1 = plt.pcolor(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
-    if (clim_baz is not None) and (clim_baz[0]<clim_baz[1]):
-        plt.clim([clim_baz[0], clim_baz[1]])
-    elif (clim_baz is not None) and (clim_baz[0]>clim_baz[1]):
-        plt.clim([clim_baz[0], clim_baz[1]+360])
-    plt.ylabel('Freq. [Hz]')
-    if log_freq == True:
-        plt.yscale('log')
-    if f_lim is not None:
-        plt.ylim(f_lim)
-    ax2.tick_params(labelbottom=False)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Plotting trace velocity
-    ax3 = fig.add_subplot(4,1,3, sharex=ax1, sharey=ax2)
-    V_plt = V.copy()
-    V_plt[ix] = None
-    if GT_baz is not None:
-        V_plt[ix_low] = None; V_plt[ix_high] = None
-    pcm2 = plt.pcolor(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
-    if clim_vtr is not None:
-        plt.clim([clim_vtr[0], clim_vtr[1]])
-    plt.ylabel('Freq. [Hz]')
-    ax3.tick_params(labelbottom=False)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Plotting semblance
-    ax4 = fig.add_subplot(4,1,4, sharex=ax1, sharey=ax2)
-    start_time_string = str(st_filt[0].stats.starttime).split('.')[0].replace('T',' ')
-    pcm3 = plt.pcolor(t_plot, f_plot, S, cmap=plt.get_cmap(cmap_sequential), shading='flat')
-    plt.clim([0,1])
-    plt.ylabel('Freq. [Hz]')
-    plt.xlabel('Time [s] after ' + start_time_string)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Manually adding colorbars - colorbar for back azimuth
-    fig.subplots_adjust(right=0.85)
-    cbar_ax = fig.add_axes([0.8575, 0.5175, 0.0200, 0.1550])
-    fig.colorbar(pcm1, cax=cbar_ax)
-    if GT_baz is not None:
-        cbar_ax.set_ylabel('Azimuth\nDeviation [\N{DEGREE SIGN}]')
-    else:
-        cbar_ax.set_ylabel('Azimuth [\N{DEGREE SIGN}]')
-    cbar_ax.locator_params(nbins=6)
-    if clim_baz is not None:
-        if clim_baz[0]>clim_baz[1]:
-            tick_labels= np.array(cbar_ax.get_yticks())
-            tick_labels= tick_labels.astype(int)
-            new_labels=(np.where((tick_labels > 360), tick_labels-360, tick_labels))
-            cbar_ax.set_yticklabels(new_labels)
-    # colorbar for trace velocity
-    cbar_ax = fig.add_axes([0.8575, 0.3175, 0.0200, 0.1550])
-    fig.colorbar(pcm2, cax=cbar_ax)
-    cbar_ax.locator_params(nbins=4)
-    cbar_ax.set_ylabel('Velocity [km/s]')
-    # colorbar for trace velocity
-    cbar_ax = fig.add_axes([0.8575, 0.1175, 0.0200, 0.1550])
-    fig.colorbar(pcm3, cax=cbar_ax)
-    cbar_ax.locator_params(nbins=4)
-    cbar_ax.set_ylabel('Semblance')
+        if GT_baz is not None:
+            B_plt = B_plt - GT_baz
+            B_plt[B_plt < -270] += 360
+            B_plt[B_plt > 270] -= 360
+        B_plt[ix] = None  # Mask out undesired pixels
+        pcm1 = ax2.pcolor(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
+        if clim_baz: pcm1.set_clim(clim_baz)
+        ax2.set_ylabel('Freq. [Hz]')
+        if log_freq: ax2.set_yscale('log')
+        if f_lim: ax2.set_ylim(f_lim)
+        ax2.tick_params(labelbottom=False)
+    # --------------------------- VELOCITY SUBPLOT ---------------------------
+    if vel_subplot:
+        ax3 = fig.add_subplot(n_subplots, 1, subplot_idx, sharex=ax_dict.get('waveform'), sharey=freq_share_ax)
+        ax_dict['vel'] = ax3
+        if freq_share_ax is None: freq_share_ax = ax3
+        subplot_idx += 1
+        V_plt = V.copy()
+        V_plt[ix] = None
+        pcm2 = ax3.pcolor(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
+        if clim_vtr: pcm2.set_clim(clim_vtr)
+        ax3.set_ylabel('Freq. [Hz]')
+        ax3.tick_params(labelbottom=False)
+    # --------------------------- SEMBLANCE SUBPLOT ---------------------------
+    if sem_plot:
+        ax4 = fig.add_subplot(n_subplots, 1, subplot_idx, sharex=ax_dict.get('waveform'), sharey=freq_share_ax)
+        ax_dict['sem'] = ax4
+        if freq_share_ax is None: freq_share_ax = ax4
+        subplot_idx += 1
+        pcm3 = ax4.pcolor(t_plot, f_plot, S, cmap=plt.get_cmap(cmap_sequential), shading='flat')
+        pcm3.set_clim([0, 1])
+        ax4.set_ylabel('Freq. [Hz]')
+    # --------------------------- FINAL FORMATTING ---------------------------
+    fig.subplots_adjust(right=0.85)  # Space for vertical colorbars
+
+    if baz_subplot:
+        bbox = ax_dict['baz'].get_position()
+        cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
+        fig.colorbar(pcm1, cax=cbar_ax).set_label('Azimuth [°]' if GT_baz is None else 'Azimuth\nDeviation [°]')
+    if vel_subplot:
+        bbox = ax_dict['vel'].get_position()
+        cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
+        fig.colorbar(pcm2, cax=cbar_ax).set_label('Velocity\n[km/s]')
+    if sem_plot:
+        bbox = ax_dict['sem'].get_position()
+        cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
+        fig.colorbar(pcm3, cax=cbar_ax).set_label('Semblance')
+
+    # Only bottom subplot gets x-axis ticks and label
+    for ax in list(ax_dict.values()):
+        ax.tick_params(labelbottom=False)
+    last_ax = list(ax_dict.values())[-1]
+    start_time_string = str(st[0].stats.starttime).split('.')[0].replace('T',' ')
+    last_ax.set_xlabel(f'Time [s] after {start_time_string}')
+    last_ax.tick_params(labelbottom=True)
     #-----------------------------------------------------------------------------------------------------------------#
     # Optionally plot PSD and compute avg SNR, beam SNR, absolute peak amplitude, and peak to peak amplitude
     if amp_units == 'Amplitude': # make sure amplitude units are input properly for plotting
@@ -3614,53 +3735,12 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
                 ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Peak Amp: %.3f'%abs_peak_amp + ' [' + units_str + '] - P2P Amp: %.3f'%peak_to_peak + ' [' + units_str + ']'
         ax1_title_obj.set_text(ax1_new_title)
     #-----------------------------------------------------------------------------------------------------------------#
-    if fname_plot is not None:
-        fig.savefig(fname_plot)
-    if fname_plot_PSD is not None:
-        fig_PSD.savefig(fname_plot_PSD)
-    if (return_beam == True) and (beamform_data == True):
-        return add_beam_to_stream(st, beamform(t_shifts, st, st[0].stats.station)[1]) # return unfiltered beam for further analysis
-    elif (return_beam == True) and (beamform_data == False):
+    # Save or return beamformed stream if requested
+    if fname_plot: fig.savefig(fname_plot)
+    if return_beam and beamform_data:
+        return add_beam_to_stream(st, beamform(t_shifts, st, st[0].stats.station)[1])
+    elif return_beam and not beamform_data:
         raise Exception('beamform_data must be set to True if return_beam is True')
-
-'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-
-def polar_plot_families(families, r_axis='velocity'):
-    '''----------------------------------------------------------------------------------------------------------------------------------
-    Produces a summary polar plot of all families
-
-    Input:
-        families (list): each entry contains unique pixel ID's in that family (output from make_families)
-        r_axis (str): the parameter to plot as a function of radius
-    ----------------------------------------------------------------------------------------------------------------------------------'''
-    fig = plt.figure()
-    ax = fig.add_subplot(111, polar=True)
-    ax.grid(True)
-    ax.set_theta_direction(-1)
-    ax.set_theta_offset(np.pi/2.0)
-
-    # Extracting detection parameters:
-    start_time = families[0,:] - np.min(families[0,:])
-    theta = families[4,:]*np.pi/180.
-    mean_freq = np.mean((families[2,:],families[3,:]), axis=0)
-    bandwidth = families[4,:] - families[3,:]
-    mean_vel = families[6,:]
-
-    hours = []
-    for mlabtime in families[0,:]:
-        mlabdatetime = num2date(mlabtime)
-        hours.append(mlabdatetime.hour + mlabdatetime.minute/60)
-
-    if r_axis == 'velocity':
-        cm = ax.scatter(theta, mean_vel, s=bandwidth/4, c=mean_freq, vmin=0, vmax=2)
-        plt.colorbar(cm)
-        ax.set_rlim([0.0,0.8])
-        plt.title('r-axis: trace velocity, color: frequency, size: Bandwidth')
-    elif r_axis == 'hour':
-        cm = ax.scatter(theta, np.array(hours), s=bandwidth/4, c=start_time)
-        plt.colorbar(cm)
-        plt.title('r-axis: Hour of day, color: Start time (days), size: Bandwidth')
-    plt.show()
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -3874,7 +3954,7 @@ def plot_scalogram(st, element=None,
         st: ObsPy stream object
         element (str): array element name used to compute spectrogram for (defaults to first element in array)
         bandpass (list): frequency range to use to bandpass time-series data (defaults to [0.5,5])
-        trim_stream (list): both inputs trim stream from start time (we suggest trimming to make cwt faster)
+        trim_stream (list): both inputs trim stream from start time (trimming is suggested to make cwt faster)
         taper (str): type of taper to use - defaults to "cosine"
         max_percentage (float/int): percentage to use for taper
         max_length (float/int): length to use for taper
@@ -4052,6 +4132,8 @@ def plot_scalogram(st, element=None,
         colorbar.set_label('['+units_str+'\u00b2]', fontsize=10)
     if log_scale == True:
         ax2.set_yscale('log')
+    if trim_stream is not None:
+        global_start += trim_stream[0]
     if (plot_UTC == True) and (t_lim == None):
         ax2.set_xlabel(global_start.strftime('%Y-%m-%d')+' Time [UTC]')
     elif (plot_UTC == False) and (t_lim is not None):
@@ -4166,7 +4248,8 @@ def plot_zero_crossings(st, element=None, bandpass=[0.5,5], resample=100, taper=
 
 def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_percentage=0.05, max_length=60, delay_times=None, data_envelope=False, trace_spacing=2.25, t_lim=None, 
                            plot_UTC=False, UTC_time_interval=None, families=None, families_table=None, family_idx=None, trim_family_window=None, v_lim=None, return_xcorr_params=False, 
-                           title1=None, title2=None, fname_plot=None, figsize=(18,6)):
+                           ax1_xlabel_fontsize=10, ax1_ylabel_fontsize=10, ax1_title_fontsize=10, ax1_ticklabel_size=10, ax2_xlabel_fontsize=10, colorbar_fontsize=10, ax2_ticklabel_size=10,
+                           ax2_title_fontsize=10, title1=None, title2=None, fname_plot=None, figsize=(18,6)):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Computes spatial cross-correlation matrix of signal and spatiotemporal cross-correlation (automatically normalizes trace data)
 
@@ -4189,6 +4272,17 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
         trim_family_window (list): both inputs decrease family window size relative to the start (similar to t_lim)
         v_lim (list): range in normalized cross-correlation values to plot for matrix (defaults to [0,1])
         return_xcorr_params (boolear): whether to return maximum normalized cross-correlation coefficients, lag times, and reference signal associated with matrix
+
+        ax1_xlabel_fontsize (int): fontsize for x label in waveforms plot
+        ax1_ylabel_fontsize (int): fontsize for y label in waveforms plot
+        ax1_title_fontsize (int): fontsize for title in waveforms plot
+        ax1_ticklabel_size (int): tick label size for waveforms plot
+
+        ax2_xlabel_fontsize (int): fontsize for x label in cross-correlation plot
+        colorbar_fontsize (int): fontsize for colorbar
+        ax2_title_fontsize (int): fontsize for title in waveforms plot
+        ax2_ticklabel_size (int): tick label size for cross-correlation plot
+
         title1 (str): title of waveforms plot
         title2 (str): title of cross-correlation matrix
         fname_plot (str): filename to save spectrogram plot
@@ -4249,22 +4343,23 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
         x_tick_positions = np.arange(rounded_start_tick - global_start, global_end - global_start, minute_interval*60)
         x_tick_labels = [(global_start + t).strftime('%H:%M:%S') for t in x_tick_positions]
         ax1.set_xticks(x_tick_positions); ax1.set_xticklabels(x_tick_labels)
-        ax1.set_xlim([0,(global_end-global_start)]); ax1.set_xlabel(global_start.strftime('%Y-%m-%d')+' Time [UTC]')
+        ax1.set_xlim([0,(global_end-global_start)]); ax1.set_xlabel(global_start.strftime('%Y-%m-%d')+' Time [UTC]', fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == False) and (t_lim is not None):
         ax1.set_xlim(t_lim)
-        ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0])
+        ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0], fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == False) and (t_lim == None):
         ax1.set_xlim([t[0],t[-1]])
-        ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0])
+        ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0], fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == True) and (t_lim is not None):
         raise Exception("Can't have t_lim and plot_UTC set to True, since t_lim is relative.")
-    plt.ylabel('Trace')
+    plt.ylabel('Trace', fontsize=ax1_ylabel_fontsize)
     if (title1 is not None) and (bandpass is not None):
-        ax1.set_title(title1+ " - Normalized Waveforms\nBandpass: " + str(bandpass))
+        ax1.set_title(title1+ " - Normalized Waveforms\nBandpass: " + str(bandpass), fontsize=ax1_title_fontsize)
     elif (title1 is not None) and (bandpass == None):
-        ax1.set_title(title1)
+        ax1.set_title(title1, fontsize=ax1_title_fontsize)
     elif (title1 == None) and (bandpass is not None):
-        ax1.set_title("Normalized Waveforms\nBandpass: " + str(bandpass))
+        ax1.set_title("Normalized Waveforms\nBandpass: " + str(bandpass), fontsize=ax1_title_fontsize)
+    ax1.tick_params(axis='both', labelsize=ax1_ticklabel_size)
     #-----------------------------------------------------------------------------------------------------------------------#
     # Compute spatiotemporal cross-correlation and map to waveforms
     val = np.mean([max(bandpass),min(bandpass)])
@@ -4318,7 +4413,7 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
         lc.set_linewidth(2)
         # Plot waveform
         ax1.add_collection(lc)
-        ax1.autoscale()
+        ax1.autoscale(enable=True, axis='y')
         k += trace_spacing
     if delay_times is not None:
         plt.axvline(x=delay_times[0], lw=1, ls='--', color='red')
@@ -4365,19 +4460,20 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
     ticks = np.arange(0,len(st),1)
     plt.pcolormesh(xcorr_coef_matrix, vmin=vmin, vmax=vmax, cmap=cmap)
     colorbar = plt.colorbar(ax=ax2)
-    colorbar.set_label('Normalized Correlation Coefficient')
+    colorbar.set_label('Normalized Correlation Coefficient', fontsize=colorbar_fontsize)
     plt.xticks(ticks, windows, ha='left'); plt.yticks(ticks, windows, va='baseline')
-    plt.xlabel('Trace')
+    plt.xlabel('Trace', fontsize=ax2_xlabel_fontsize)
     if title2 == None:
         if data_envelope == True:
-            plt.title('Envelope Correlation Matrix')
+            plt.title('Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
         else:
-            plt.title('Correlation Matrix')
+            plt.title('Correlation Matrix', fontsize=ax2_title_fontsize)
     else:
         if data_envelope == True:
-            plt.title(title2 + ' Envelope Correlation Matrix')
+            plt.title(title2 + ' Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
         else:
-            plt.title(title2 + ' Correlation Matrix')
+            plt.title(title2 + ' Correlation Matrix', fontsize=ax2_title_fontsize)
+    ax2.tick_params(axis='both', labelsize=ax2_ticklabel_size)
     # Save figure
     if fname_plot is not None:
         fig.savefig(fname_plot)
