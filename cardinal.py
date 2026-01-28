@@ -40,6 +40,7 @@ from scipy.spatial import KDTree
 from pisces.tables.css3 import Wfdisc
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter
+from matplotlib.ticker import FixedLocator
 from scipy.spatial.distance import cdist, pdist
 from scipy.integrate import cumulative_trapezoid
 from matplotlib.collections import LineCollection
@@ -3236,6 +3237,53 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5.,
     ax1.get_yaxis().set_ticks([])
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+# Ancillary plotting functions
+
+def wrap180(x):
+    return (x + 180) % 360 - 180
+
+def circular_mean_deg(a):
+    a = np.asarray(a, float)
+    a = a[np.isfinite(a)] % 360.0
+    if a.size == 0:
+        return np.nan
+    rad = np.deg2rad(a)
+    mean_rad = np.arctan2(np.mean(np.sin(rad)), np.mean(np.cos(rad)))
+    return (np.rad2deg(mean_rad) + 360.0) % 360.0
+
+def circular_autoclim_robust_deg(a, q=(5, 95), pad=5):
+    """
+    Robust clim for raw azimuth (0–360) that focuses on the dominant cluster.
+    Returns (vmin, vmax) that are compatible with set_clim and can cross 360.
+    """
+    a = np.asarray(a, float)
+    a = a[np.isfinite(a)] % 360.0
+    if a.size < 2:
+        return (0.0, 360.0)
+
+    m = circular_mean_deg(a)
+    dev = wrap180(a - m)  # [-180, 180]
+    lo, hi = np.percentile(dev, q)
+
+    vmin = (m + lo - pad)
+    vmax = (m + hi + pad)
+
+    # Ensure clim is an "increasing" interval for matplotlib.
+    # If it crosses 0/360, allow vmax to be > 360 (matplotlib is fine with that).
+    if vmax < vmin:
+        vmax += 360.0
+
+    return (vmin, vmax)
+
+def robust_clim(A, q=(2, 98)):
+    """Return robust (vmin, vmax) from array A using percentiles, ignoring NaNs."""
+    a = np.asarray(A, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return None
+    return np.nanpercentile(a, q).tolist()
+
+'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plot_sliding_window_multifreq(st, f_bands, T, B, V, S, 
                                 ############### Subplots ########################################################
@@ -3333,13 +3381,12 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
     # Mask the semblance field based on specified families (for selective plotting)
     S_filt = S.copy()
     if (pixels_in_families is not None) and (ix is not None):
-        # Construct binary mask where pixels part of a family are 1, others 0
+        # Set all semblances to zero where the pixel is not in a family:
         x = np.zeros(S.shape)
-        x[ix[0][pixels_in_families], ix[1][pixels_in_families]] = 1
-        S_filt[x == 0] = 0  # Remove semblance values not in families
-        ix = np.where(S_filt < 1e-6)  # Update pixel index mask
-    elif (pixels_in_families is None) and (ix is None):
-        # Default filtering: threshold semblance globally
+        x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
+        S_filt[x == 0] = 0
+        ix = np.where(S_filt < 1e-6)
+    elif (pixels_in_families == None) and (ix == None):
         ix = np.where(S_filt < semblance_threshold)
 
     # Extend time and frequency vectors for pcolor-style plotting
@@ -3540,21 +3587,43 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
     # --------------------------- BAZIMUTH SUBPLOT ---------------------------
     if baz_subplot:
-        ax2 = fig.add_subplot(n_subplots, 1, subplot_idx, sharex=ax_dict.get('waveform'), sharey=freq_share_ax)
+        ax2 = fig.add_subplot(
+            n_subplots, 1, subplot_idx,
+            sharex=ax_dict.get('waveform'), sharey=freq_share_ax
+        )
         ax_dict['baz'] = ax2
-        if freq_share_ax is None: freq_share_ax = ax2
+        if freq_share_ax is None:
+            freq_share_ax = ax2
         subplot_idx += 1
-        B_plt = B.copy()
+        B_plt = B.copy().astype(float)
+        B_plt[ix] = np.nan  # mask invalid pixels
         if GT_baz is not None:
-            B_plt = B_plt - GT_baz
-            B_plt[B_plt < -270] += 360
-            B_plt[B_plt > 270] -= 360
-        B_plt[ix] = None  # Mask out undesired pixels
-        pcm1 = ax2.pcolor(t_plot, f_plot, B_plt, cmap=plt.get_cmap(cmap_cyclic), shading='flat')
-        if clim_baz: pcm1.set_clim(clim_baz)
+            # ------------------ DEVIATION MODE ------------------
+            B_dev = wrap180(B_plt - GT_baz)
+            pcm1 = ax2.pcolor(
+                t_plot, f_plot, B_dev,
+                cmap=plt.get_cmap(cmap_cyclic), shading='flat'
+            )
+            if clim_baz is not None:
+                pcm1.set_clim(clim_baz)
+            # else: autoscale tightly around deviation cluster
+        else:
+            # ------------------ RAW AZIMUTH MODE ------------------
+            B_raw = B_plt % 360.0
+            pcm1 = ax2.pcolor(
+                t_plot, f_plot, B_raw,
+                cmap=plt.get_cmap(cmap_cyclic), shading='flat'
+            )
+            if clim_baz is not None:
+                pcm1.set_clim(clim_baz)
+            else:
+                vmin, vmax = circular_autoclim_robust_deg(B_raw, q=(5, 95), pad=5)
+                pcm1.set_clim(vmin, vmax)
         ax2.set_ylabel('Freq. [Hz]')
-        if log_freq: ax2.set_yscale('log')
-        if f_lim: ax2.set_ylim(f_lim)
+        if log_freq:
+            ax2.set_yscale('log')
+        if f_lim:
+            ax2.set_ylim(f_lim)
         ax2.tick_params(labelbottom=False)
     # --------------------------- VELOCITY SUBPLOT ---------------------------
     if vel_subplot:
@@ -3562,10 +3631,15 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         ax_dict['vel'] = ax3
         if freq_share_ax is None: freq_share_ax = ax3
         subplot_idx += 1
-        V_plt = V.copy()
+        V_plt = V.copy().astype(float)
         V_plt[ix] = None
         pcm2 = ax3.pcolor(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
-        if clim_vtr: pcm2.set_clim(clim_vtr)
+        if clim_vtr is None:
+            auto = robust_clim(V_plt, q=(5, 95))
+            if auto is not None:
+                pcm2.set_clim(auto)
+        else:
+            pcm2.set_clim(clim_vtr)
         ax3.set_ylabel('Freq. [Hz]')
         ax3.tick_params(labelbottom=False)
     # --------------------------- SEMBLANCE SUBPLOT ---------------------------
@@ -3580,14 +3654,72 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
     # --------------------------- FINAL FORMATTING ---------------------------
     fig.subplots_adjust(right=0.85)  # Space for vertical colorbars
 
+    # ----------- Back azimuth colorbar -----------
     if baz_subplot:
         bbox = ax_dict['baz'].get_position()
         cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
-        fig.colorbar(pcm1, cax=cbar_ax).set_label('Azimuth [°]' if GT_baz is None else 'Azimuth\nDeviation [°]')
+        cbar = fig.colorbar(pcm1, cax=cbar_ax)
+        # -------------------------
+        # MANUAL CLIM MODE
+        # If user supplies clim_baz, let matplotlib handle ticks/range normally.
+        # -------------------------
+        if clim_baz is not None:
+            cbar.set_label('Azimuth [°]' if GT_baz is None else 'Azimuth\nDeviation [°]')
+            # nothing else: no snapping, no FixedLocator, no ticklabels, no ylim
+            # (matplotlib defaults apply)
+        else:
+            # -------------------------
+            # AUTO MODES
+            # -------------------------
+            vmin, vmax = pcm1.get_clim()
+            # deviation mode (fixed limits)
+            if GT_baz is not None:
+                pcm1.set_clim(-180, 180)
+                vmin, vmax = pcm1.get_clim()
+                ticks = np.linspace(vmin, vmax, 5)
+                cbar.update_normal(pcm1)
+                cbar.ax.set_ylim(vmin, vmax)
+                cbar.ax.yaxis.set_major_locator(FixedLocator(ticks))
+                cbar.set_ticks(ticks)
+                cbar.set_ticklabels([f"{int(np.round(t))}" for t in ticks])
+                cbar.set_label("Azimuth\nDeviation [°]")
+            # raw azimuth auto mode (snap endpoints, 5 evenly spaced ticks)
+            else:
+                base = 10
+                n_inner = 3
+                n_intervals = n_inner + 1
+
+                vmin_s = base * np.floor(vmin / base)
+                vmax_s = base * np.ceil(vmax / base)
+                if vmax_s < vmin_s:
+                    vmax_s += 360
+
+                span = vmax_s - vmin_s
+                step_unit = base * n_intervals
+                span_s = step_unit * np.ceil(span / step_unit)
+                vmax_s = vmin_s + span_s
+
+                pcm1.set_clim(vmin_s, vmax_s)
+                vmin, vmax = pcm1.get_clim()
+                ticks = np.linspace(vmin, vmax, n_intervals + 1)
+
+                cbar.update_normal(pcm1)
+                cbar.ax.set_ylim(vmin, vmax)
+                cbar.ax.yaxis.set_major_locator(FixedLocator(ticks))
+                cbar.set_ticks(ticks)
+                cbar.set_ticklabels([f"{int(np.round(t)) % 360}" for t in ticks])
+                cbar.set_label("Azimuth [°]")
+            # prevent pruning / offsets (safe to do in auto modes)
+            cbar.ax.yaxis.get_offset_text().set_visible(False)
+            cbar.ax.tick_params(pad=2)
+
+    # ----------- Trace velocity colorbar ----------
     if vel_subplot:
         bbox = ax_dict['vel'].get_position()
         cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
-        fig.colorbar(pcm2, cax=cbar_ax).set_label('Velocity\n[km/s]')
+        fig.colorbar(pcm2, cax=cbar_ax).set_label('Velocity [km/s]')
+
+    # ----------- Semblance colorbar ----------
     if sem_plot:
         bbox = ax_dict['sem'].get_position()
         cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
@@ -3596,6 +3728,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
     # Only bottom subplot gets x-axis ticks and label
     for ax in list(ax_dict.values()):
         ax.tick_params(labelbottom=False)
+
     last_ax = list(ax_dict.values())[-1]
     start_time_string = str(st[0].stats.starttime).split('.')[0].replace('T',' ')
     last_ax.set_xlabel(f'Time [s] after {start_time_string}')
