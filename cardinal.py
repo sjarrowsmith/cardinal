@@ -1675,86 +1675,117 @@ def sliding_time_array_fk_multifreq(st, f_bands, client=None, t_start=None, t_en
     Note: Client restarts automatically once 80% memory has been allocated
     IMPORTANT: Client needs to be specified outside of function to avoid unnecessary overhead
     ---------------------------------------------------------------------------------------------------------'''
-    # Slowness grid
+    # ---------------- Slowness grid ----------------
     if signal_type == 'infrasound':
         sll_x=-3.6; slm_x=3.6; sll_y=-3.6; slm_y=3.6; sl_s=0.18
     elif signal_type == 'seismic':
         sll_x=-0.5; slm_x=0.5; sll_y=-0.5; slm_y=0.5; sl_s=0.01
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Set warning message for parallel processing
+    else:
+        raise ValueError("signal_type must be 'infrasound' or 'seismic'")
+
+    # ---------------- Workers ----------------
     if client is not None:
         n_workers = len(client.scheduler_info()["workers"])
+        if n_workers < 2:
+            raise Exception("n_workers must be > 1 for parallel computing")
     else:
         n_workers = 1
-    if (client == None) and (n_workers > 1):
-        raise Exception('Client must be specified if n_workers > 1')
-    elif (client is not None) and (n_workers == 1):
-        raise Exception('n_workers must be > 1 for parallel computing')
-    # Defining t_start, t_end:
-    if (t_start == None) and (t_end == None):
-        if adaptive_array == True:
-            tr = st[0].select(station=st[0][0].stats.station)[0]
+        
+    # ---------------- Define t_start / t_end ----------------
+    if (t_start is None) and (t_end is None):
+        if adaptive_array:
+            tr = st[0][0]   # first trace of first band stream
         else:
-            tr = st.select(station=st[0].stats.station)[0]
+            tr = st[0]      # first trace of stream
         t_start = 1
-        t_end = (tr.stats.npts * tr.stats.delta)-1
-    if adaptive_array == False:
-        element = st[0].stats.station
-        st = [st]*len(f_bands)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Processing each frequency band with sliding window FK processing:
-    T_all = []; B_all = []; V_all = []; S_all = []; dask_all = []
-    for f_band, st_tmp in zip(f_bands['band'].values, st):
-        # Initialize array processing params
-        win_len = f_bands[f_bands['band'] == f_band]['win'].values[0]
-        frqlow = f_bands[f_bands['band'] == f_band]['fmin'].values[0]
-        frqhigh = f_bands[f_bands['band'] == f_band]['fmax'].values[0]
-        win_frac = f_bands[f_bands['band'] == f_band]['step'].values[0]/f_bands[f_bands['band'] == f_band]['win'].values[0]
-        if adaptive_array == True:
-            element = st_tmp[0].stats.station # reference station may vary with adaptive array
-        # Process array data
-        if n_workers == 1: # don't run parallel computing
-            T, B, V, S = sliding_time_array_fk(st_tmp, element, tstart=t_start, tend=t_end,
-                                                win_len=win_len, win_frac=win_frac, frqlow=frqlow, frqhigh=frqhigh,
-                                                sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y, sl_s=sl_s, sl_corr=sl_corr, 
-                                                use_geographic_coords=use_geographic_coords)
+        t_end = (tr.stats.npts * tr.stats.delta) - 1
+
+    # ---------------- Ensure per-band streams list ----------------
+    # Also precompute per-band reference station names BEFORE scatter
+    if not adaptive_array:
+        element0 = st[0].stats.station
+        st_list = [st] * len(f_bands)
+        elements = [element0] * len(f_bands)
+    else:
+        # st is already list-like: one subarray stream per band
+        st_list = st
+        elements = [st_tmp[0].stats.station for st_tmp in st_list]
+
+    # ---------------- Parallel branch: scatter once ----------------
+    if (client is not None) and (n_workers > 1):
+        if not adaptive_array:
+            st_future = client.scatter(st, broadcast=True)
+            st_futures = [st_future] * len(f_bands)
+        else:
+            st_futures = client.scatter(st_list, broadcast=False)
+    else:
+        st_futures = st_list
+
+    # ---------------- Process each band ----------------
+    T_all = []; B_all = []; V_all = []; S_all = []; futures = []
+    for i, f_band in enumerate(f_bands['band'].values):
+        st_tmp = st_futures[i]
+        element = elements[i]
+
+        win_len  = f_bands.loc[f_bands['band'] == f_band, 'win'].values[0]
+        frqlow   = f_bands.loc[f_bands['band'] == f_band, 'fmin'].values[0]
+        frqhigh  = f_bands.loc[f_bands['band'] == f_band, 'fmax'].values[0]
+        win_frac = (
+            f_bands.loc[f_bands['band'] == f_band, 'step'].values[0] /
+            f_bands.loc[f_bands['band'] == f_band, 'win'].values[0]
+        )
+        if n_workers == 1:
+            T, B, V, S = sliding_time_array_fk(
+                st_tmp, element,
+                tstart=t_start, tend=t_end,
+                win_len=win_len, win_frac=win_frac,
+                frqlow=frqlow, frqhigh=frqhigh,
+                sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y,
+                sl_s=sl_s, sl_corr=sl_corr,
+                use_geographic_coords=use_geographic_coords
+            )
             T_all.append(T); B_all.append(B); V_all.append(V); S_all.append(S)
-        elif n_workers > 1: # run parallel computing 
-            dask_out = dask.delayed(sliding_time_array_fk)(st_tmp, element, tstart=t_start, tend=t_end, 
-                                                           win_len=win_len, win_frac=win_frac, frqlow=frqlow, frqhigh=frqhigh, 
-                                                           sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y, sl_s=sl_s, sl_corr=sl_corr,
-                                                           use_geographic_coords=use_geographic_coords)
-            dask_all.append(dask_out)
+        else:
+            fut = client.submit(
+                sliding_time_array_fk,
+                st_tmp, element,
+                tstart=t_start, tend=t_end,
+                win_len=win_len, win_frac=win_frac,
+                frqlow=frqlow, frqhigh=frqhigh,
+                sll_x=sll_x, slm_x=slm_x, sll_y=sll_y, slm_y=slm_y,
+                sl_s=sl_s, sl_corr=sl_corr,
+                use_geographic_coords=use_geographic_coords,
+                pure=False
+            )
+            futures.append(fut)
     if n_workers > 1:
-        # Organizing output from distributed process and checking memory usage
-        out = dask.compute(*dask_all)
+        out = client.gather(futures)
         for out_i in out:
             T_all.append(out_i[0]); B_all.append(out_i[1]); V_all.append(out_i[2]); S_all.append(out_i[3])
+
         memory_usage = psutil.virtual_memory().percent
         if memory_usage > memory_usage_threshold:
-            print(f"Memory usage at {memory_usage}%, restarting client...")
+            print(f"Memory usage at {memory_usage}%, running gc...")
+            client.run(gc.collect)
             gc.collect()
-            client.restart()
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Extracting the time vector corresponding to the maximum number of values:
-    N = []
-    for T in T_all:
-        N.append(len(T))
-    T = T_all[np.argmax(N)] # Times for f-band with highest number of DOA estimates
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Re-sampling array processing results to produce time/frequency matrices:
+
+    # ---------------- Use longest time vector ----------------
+    T = T_all[np.argmax([len(t) for t in T_all])]
+
+    # ---------------- Resample into matrices ----------------
     NF = len(f_bands)
     NT = len(T)
     B = np.zeros((NF, NT))
     V = np.zeros((NF, NT))
     S = np.zeros((NF, NT))
-    for i in range(0, NF):
-        T_i = T_all[i]; B_i = B_all[i]; V_i = V_all[i]; S_i = S_all[i]
-        for j in range(0, NT):
+
+    for i in range(NF):
+        T_i, B_i, V_i, S_i = T_all[i], B_all[i], V_all[i], S_all[i]
+        for j in range(NT):
             ix = np.argmin(np.abs(T[j] - T_i))
-            B[i,j] = B_i[ix]
-            V[i,j] = V_i[ix]
-            S[i,j] = S_i[ix]
+            B[i, j] = B_i[ix]
+            V[i, j] = V_i[ix]
+            S[i, j] = S_i[ix]
 
     return T, B, V, S
 
@@ -2839,6 +2870,7 @@ def plot_data_quality(st,
     elif (plot_UTC == True) and (t_lim is not None):
         raise Exception("Can't have t_lim and plot_UTC set to True, since t_lim is relative.")
     ax3.set_title('Data Gaps')
+    plt.tight_layout()
     #-----------------------------------------------------------------------------------------------------------------#
     # Return corrected stream
     if return_stream == True:
@@ -3445,7 +3477,8 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
                 baz = families_table['mean_baz'][family_idx]
                 vel = families_table['mean_vel'][family_idx]
             t_shifts = get_slowness_vector_time_shifts(st_filt, st_filt[0].stats.station, baz=baz, vel=vel, units='km')
-            t_beam, beam_data = beamform(t_shifts, st_filt, st_filt[0].stats.station, normalize_beam=normalize)
+            t_beam, beam_data = beamform(t_shifts, st_filt, st_filt[0].stats.station, normalize_beam=normalize) # filtered beam
+            t_beam, beam_data_tf = beamform(t_shifts, st_taper, st_filt[0].stats.station, normalize_beam=normalize) # raw beam for time-frequency
             t, data = t_beam, beam_data
             ax1.plot(t, data, color='grey', label='Beam')
 
@@ -3490,11 +3523,11 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
         # Select trace data (beam or single channel)
         if beamform_data and 'beam_data' in locals():
-            data_tf = beam_data
-            fs_tf = st_filt[0].stats.sampling_rate
+            data_tf = beam_data_tf
+            fs_tf = st_taper[0].stats.sampling_rate
             dt_tf = 1.0 / fs_tf
         else:
-            trace_tf = st_filt.select(station=element)[0] if element else st_filt[0]
+            trace_tf = st_taper.select(station=element)[0] if element else st_filt[0]
             data_tf = trace_tf.data
             fs_tf = trace_tf.stats.sampling_rate
             dt_tf = trace_tf.stats.delta
@@ -3520,7 +3553,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
             bbox = ax_tf.get_position()
             cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
-            fig.colorbar(pcm_tf, cax=cbar_ax).set_label('Log10[Amplitude²/Hz]')
+            fig.colorbar(pcm_tf, cax=cbar_ax).set_label('Log10\n[Amplitude²/Hz]')
             ax_tf.tick_params(labelbottom=False)
             ax_tf.set_ylim([f_bands['fmin'].min(), f_bands['fmax'].max()])
 
@@ -3717,7 +3750,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
     if vel_subplot:
         bbox = ax_dict['vel'].get_position()
         cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
-        fig.colorbar(pcm2, cax=cbar_ax).set_label('Velocity [km/s]')
+        fig.colorbar(pcm2, cax=cbar_ax).set_label('Velocity\n[km/s]')
 
     # ----------- Semblance colorbar ----------
     if sem_plot:
@@ -4877,3 +4910,9 @@ def train_models(split, epochs=1000, batch_size=32, lr=1e-3, patience=50, n_spli
     print('Start training RC model')
     history = RC_model.fit([X_train_geometries_tmp, X_train_freqs_tmp], y_train_tmp, validation_data=([X_test_geometries_tmp, X_test_freqs_tmp], y_test_tmp), epochs=epochs, batch_size=batch_size,
                            callbacks=[checkpoint, early_stopping, csv_logger])
+
+'----------------------------------------------'
+'---------------------------------------------------------------------------'
+'----------------------------------------------------------------------------------------------------------------'
+'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+'--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
