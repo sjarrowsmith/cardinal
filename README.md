@@ -7,6 +7,7 @@ Navigate to Cardinal directory
 - conda env create -f cardinal_env.yml
 - conda activate cardinal or source activate cardinal
 - pip install tensorflow==2.19.0
+- pip install cx_Oracle and pip install oracledb
 
 If you encounter conflicts during install, run these first:
 - conda config --add channels conda-forge
