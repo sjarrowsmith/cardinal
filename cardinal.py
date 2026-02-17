@@ -777,38 +777,41 @@ def append_location_info(st, array_coords_filepath):
         df = pd.read_table(array_coords_filepath, header=None, sep='\s+', names=['Stn', 'Lat', 'Lon', 'Elev']) # array coordinates
     except:
         df = pd.read_table(array_coords_filepath, header=None, sep='\s+', names=['Stn', 'Lat', 'Lon']) # array coordinates
+
+    # Making sure station labels are always strings in site file
+    df["Stn"] = df["Stn"].astype(str)
     if len(df.columns) == 4:
         for tr in st:
-            index = np.where(df['Stn'] == tr.stats.station)[0]
+            index = np.where(df['Stn'].values == tr.stats.station)[0]
             sacAttrib = AttribDict({'stla': df['Lat'][index],
                                     'stlo': df['Lon'][index],
                                 'stel': df['Elev'][index]})
             tr.stats.sac = sacAttrib
         for tr in st:
             try:
-                lat = (df[df['Stn'] == tr.stats.station]['Lat']).values[0]
-                lon = (df[df['Stn'] == tr.stats.station]['Lon']).values[0]
-                elev = (df[df['Stn'] == tr.stats.station]['Elev']).values[0]
+                lat = (df[df['Stn'].values == tr.stats.station]['Lat']).values[0]
+                lon = (df[df['Stn'].values == tr.stats.station]['Lon']).values[0]
+                elev = (df[df['Stn'].values == tr.stats.station]['Elev']).values[0]
             except:
-                lat = (df[df['Stn'] == tr.id]['Lat']).values[0]
-                lon = (df[df['Stn'] == tr.id]['Lon']).values[0]
-                elev = (df[df['Stn'] == tr.id]['Elev']).values[0]
+                lat = (df[df['Stn'].values == tr.id]['Lat']).values[0]
+                lon = (df[df['Stn'].values == tr.id]['Lon']).values[0]
+                elev = (df[df['Stn'].values == tr.id]['Elev']).values[0]
             tr.stats.sac.stla = lat
             tr.stats.sac.stlo = lon
             tr.stats.sac.stel = elev
     elif len(df.columns) == 3:
         for tr in st:
-            index = np.where(df['Stn'] == tr.stats.station)[0]
+            index = np.where(df['Stn'].values == tr.stats.station)[0]
             sacAttrib = AttribDict({'stla': df['Lat'][index],
                                     'stlo': df['Lon'][index]})
             tr.stats.sac = sacAttrib
         for tr in st:
             try:
-                lat = (df[df['Stn'] == tr.stats.station]['Lat']).values[0]
-                lon = (df[df['Stn'] == tr.stats.station]['Lon']).values[0]
+                lat = (df[df['Stn'].values == tr.stats.station]['Lat']).values[0]
+                lon = (df[df['Stn'].values == tr.stats.station]['Lon']).values[0]
             except:
-                lat = (df[df['Stn'] == tr.id]['Lat']).values[0]
-                lon = (df[df['Stn'] == tr.id]['Lon']).values[0]
+                lat = (df[df['Stn'].values == tr.id]['Lat']).values[0]
+                lon = (df[df['Stn'].values == tr.id]['Lon']).values[0]
             tr.stats.sac.stla = lat
             tr.stats.sac.stlo = lon
     else:
@@ -2295,8 +2298,8 @@ def read_families_from_db(dbname):
 ############## Plotting Functions #############
 ############### ############### ###############
 
-def plot_array_data(data_filepath, array_coords_filepath, event_time=None, source_lat=None, source_lon=None, parameter_table=None, array=None, trim_stream=None, amp_lim=None, amp_units='Amplitude', 
-                    channel=None, bandpass=[0.5,5], taper='cosine', max_percentage=0.05, max_length=60, remove_stations=None, convert_units=None, plot=True, equal_scale=True, interpolate_gaps=False, 
+def plot_array_data(data_filepath, array_coords_filepath=None, event_time=None, source_lat=None, source_lon=None, parameter_table=None, array=None, trim_stream=None, amp_lim=None, amp_units='Amplitude', 
+                    channel=None, bandpass=[0.5,5], taper='cosine', max_percentage=0.05, max_length=60, remove_stations=None, convert_units=None, integrate=False, plot=True, equal_scale=True, interpolate_gaps=False, 
                     fname_plot=None, figsize=(1200,800)):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Plots array data in UTC time
@@ -2322,6 +2325,7 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
         max_length (float/int): length to use for taper
         remove_stations (list): each entry is station name to remove from array
         convert_units (list): the value necessary to convert counts to units (Pa, m/s, etc.), assumes units of Pa/counts (if it's counts/Pa input value as 1/convert_to_units)
+        integrate (boolean): whether or not to integrate values (e.g., convert m/s to m)
         plot (boolean): whether to plot array data
         equal_scale (boolean): whether to make each trace the same scale in plot
         interpolate_gaps (boolean): whether to interpolate gaps in array data
@@ -2379,6 +2383,8 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
         elif len(convert_units) > 1: # or specify value for each trace
             for i, tr in enumerate(st):
                 tr.data = tr.data*convert_units[i]
+        if integrate:
+            tr.data = cumulative_trapezoid(tr.data, dx=tr.stats.delta, initial=0.0)
     #-----------------------------------------------------------------------------------------------------------------#
     # Removing stations
     if remove_stations is not None:
@@ -2408,10 +2414,13 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
             tr.data = data[idx,:].copy()
     #-----------------------------------------------------------------------------------------------------------------#
     # Appending geographic coordinates
-    try:
-        st = append_location_info(st, array_coords_filepath)
-    except Exception as inst:
-        print('Error: '+str(inst) + ' - could not append location info')
+    if array_coords_filepath is not None:
+        try:
+            st = append_location_info(st, array_coords_filepath)
+        except Exception as inst:
+            print('Error: '+str(inst) + ' - could not append location info for:\n' + str(st))
+    else:
+        print('No location metadata added to ObsPy stream using this function')
     #-----------------------------------------------------------------------------------------------------------------#
     # Filter data and plot stream
     if bandpass is not None:
@@ -2502,7 +2511,7 @@ def plot_array_data(data_filepath, array_coords_filepath, event_time=None, sourc
     #-----------------------------------------------------------------------------------------------------------------#
     # Save figure
     if fname_plot is not None:
-        fig.savefig(fname_plot)
+        fig.savefig(fname_plot, dpi=300)
     #-----------------------------------------------------------------------------------------------------------------------#  
     # Return params  
     if (parameter_table is not None) or (event_time is not None):
@@ -2884,7 +2893,7 @@ def plot_data_quality(st,
                 if len(stns_to_remove) == 0: # this means all DBSCAN outliers were removed due to data gaps
                     # Save figure
                     if fname_plot is not None:
-                        fig.savefig(fname_plot)
+                        fig.savefig(fname_plot, dpi=300)
                     return st_new
                 # Need to update num_outliers to add new stations removed by data gap or remove previous stations from DBSCAN that were removed by data gap
                 num_outliers = len(stns_to_remove)
@@ -2897,7 +2906,7 @@ def plot_data_quality(st,
                             pass
                     # Save figure
                     if fname_plot is not None:
-                        fig.savefig(fname_plot)
+                        fig.savefig(fname_plot, dpi=300)
                     return st_new
                 elif (len(st_new) - num_outliers) < 3: # if we don't have enough stations for array processing, only remove most extreme outliers until we have 3 sensors
                     print('Not enough sensors left in array after PSD analysis, only removing extreme outliers or keeping all sensors if only 3 remain.')
@@ -2907,7 +2916,7 @@ def plot_data_quality(st,
                         ax1_title_obj.set_text(ax1_new_title)
                         # Save figure
                         if fname_plot is not None:
-                            fig.savefig(fname_plot)
+                            fig.savefig(fname_plot, dpi=300)
                         return st_new
                     else:
                         # Re-compute PSD using stream with flat PSDs and data gaps removed
@@ -2954,19 +2963,19 @@ def plot_data_quality(st,
                             st_new.remove(st_new.select(station=stn)[0])
                         # Save figure
                         if fname_plot is not None:
-                            fig.savefig(fname_plot)
+                            fig.savefig(fname_plot, dpi=300)
                         return st_new
             else:
                 if fname_plot is not None:
-                    fig.savefig(fname_plot)
+                    fig.savefig(fname_plot, dpi=300)
                 return st_new
         elif len(st_new) < 3:
             if fname_plot is not None:
-                fig.savefig(fname_plot)
+                fig.savefig(fname_plot, dpi=300)
             raise Exception('Not enough stations left after removing flat PSDs and/or excessive data gaps')
     else:
         if fname_plot is not None:
-            fig.savefig(fname_plot)
+            fig.savefig(fname_plot, dpi=300)
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -3061,14 +3070,14 @@ def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m',
         plt.ylim(y_lim)
     #-----------------------------------------------------------------------------------------------------------------#
     if fname_plot is not None:
-        fig.savefig(fname_plot)
+        fig.savefig(fname_plot, dpi=300)
         
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plotFK(st, startTime, endTime, frqlow, frqhigh,
            sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18,
            plot=True, normalize=True, sl_corr=[0.,0.], show_peak=False,
-           cmap='viridis'):
+           cmap='viridis', figsize=(12,9), fname_plot=None):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Computes and displays an FK plot for an ObsPy Stream object
 
@@ -3085,6 +3094,8 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
         normalize (boolean): whether to normalize the data in the time window before running FK
         show_peak (boolean): whether to show the peak of the FK
         cmap (str): colormap to be used for plotting
+        figsize (tuple): figure size
+        fname_plot (str): filepath to save figure
 
     Output:
         relpow_map (array): relative power map of FK
@@ -3185,6 +3196,7 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
     baz = azimut % -360 + 180
 
     if plot:
+        fig = plt.figure(figsize=figsize)
         plt.pcolormesh(np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[0],
                        np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[1],
                        np.flipud(np.fliplr(relpow_map.transpose())),
@@ -3193,10 +3205,13 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
         plt.ylim(sll_y,slm_y)
         plt.plot(0, 0, 'w+')
         if show_peak:
-            plt.plot(-slow_x, -slow_y, 'w*')
+            plt.plot(-slow_x, -slow_y, 'r*')
         plt.xlabel('Slowness x [s/km]')
         plt.ylabel('Slowness y [s/km]')
         plt.title('Peak semblance at ' + str(round(baz % 360., 2)) + ' [deg.] ' + str(round(1/slow, 2)) + ' [km/s]')
+        plt.tight_layout()
+        if fname_plot: fig.savefig(fname_plot, dpi=300)
+
 
     # only flipping left-right, when using imshow to plot the matrix is takes points top to bottom
     # points are now starting at top-left in row major
@@ -3269,51 +3284,17 @@ def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5.,
     ax1.get_yaxis().set_ticks([])
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-# Ancillary plotting functions
+# Ancillary plotting functions for azimuth visualization
 
-def wrap180(x):
-    return (x + 180) % 360 - 180
+def wrap360(deg):
+    '''Map degrees to [0,360]'''
+    deg = np.asarray(deg, dtype=float)
+    return deg % 360.0
 
-def circular_mean_deg(a):
-    a = np.asarray(a, float)
-    a = a[np.isfinite(a)] % 360.0
-    if a.size == 0:
-        return np.nan
-    rad = np.deg2rad(a)
-    mean_rad = np.arctan2(np.mean(np.sin(rad)), np.mean(np.cos(rad)))
-    return (np.rad2deg(mean_rad) + 360.0) % 360.0
-
-def circular_autoclim_robust_deg(a, q=(5, 95), pad=5):
-    """
-    Robust clim for raw azimuth (0–360) that focuses on the dominant cluster.
-    Returns (vmin, vmax) that are compatible with set_clim and can cross 360.
-    """
-    a = np.asarray(a, float)
-    a = a[np.isfinite(a)] % 360.0
-    if a.size < 2:
-        return (0.0, 360.0)
-
-    m = circular_mean_deg(a)
-    dev = wrap180(a - m)  # [-180, 180]
-    lo, hi = np.percentile(dev, q)
-
-    vmin = (m + lo - pad)
-    vmax = (m + hi + pad)
-
-    # Ensure clim is an "increasing" interval for matplotlib.
-    # If it crosses 0/360, allow vmax to be > 360 (matplotlib is fine with that).
-    if vmax < vmin:
-        vmax += 360.0
-
-    return (vmin, vmax)
-
-def robust_clim(A, q=(2, 98)):
-    """Return robust (vmin, vmax) from array A using percentiles, ignoring NaNs."""
-    a = np.asarray(A, dtype=float)
-    a = a[np.isfinite(a)]
-    if a.size == 0:
-        return None
-    return np.nanpercentile(a, q).tolist()
+def wrap180(deg):
+    '''Map degrees to [-180,180]'''
+    deg = np.asarray(deg, dtype=float)
+    return (deg + 180.0) % 360.0 - 180.0
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -3332,7 +3313,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
                                 ############### Processing results ##############################################
                                 semblance_threshold=0.7, clim_baz=None, clim_vtr=[0,1], log_freq=True, cmap_cyclic='twilight', 
-                                cmap_sequential='pink_r', f_lim=None, GT_baz=None,
+                                cmap_sequential='pink_r', f_lim=None, GT_baz=None, baz_range="360",
 
                                 ############### Power Spectral Density ##############################################
                                 compute_metrics=False, trim_family_window=None, window='hann', nperseg=2**8, noverlap_percent=50, 
@@ -3347,7 +3328,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
                                 scal_v_lim=None, use_filtered_data=False,
 
                                 ############### Plotting params #################################################
-                                title=None, figsize=(9,6), fname_plot=None, fname_plot_PSD=None):
+                                title=None, title_fontsize=12, figsize=(9,6), fname_plot=None, fname_plot_PSD=None):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Plots the results of sliding-window array processing that span multiple frequency bands
 
@@ -3389,6 +3370,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         cmap_sequential (str): colormap to be used for seqeuntial value ranges
         f_lim (list): range in frequencies to plot
         GT_baz (float/int): ground truth back azimuth - specified only if you want to plot deviation (clim_baz turns into plus/minus deviation)
+        baz_range (str): specify what range to plot azimuth values (either "180" for [-180,180] or "360" for [0,360]) - best to use "180" if detection is due North
         compute_metrics (boolean): whether to produce PSD plot and calculate average SNR, beam SNR, absolute peak beam amplitude, and peak-to-peak amplitude (results will be displayed in title)
         trim_family_window (list): both inputs decrease family window size relative to the start (in seconds or UTC)
         window (str): desired window to use for PSD (defaults to hann)
@@ -3402,6 +3384,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         spec_cmap (str): colormap to be used for spectrogram
         v_lim (list): limits for spectrogram colorbar (defaults to None)
         title (str): title of array processing plot
+        title_fontsize (int): font size of title
         figsize (tuple): specifies size of figure
         fname_plot (str): filename to save array processing plot
         fname_plot_PSD (str): filename to save PSD plot
@@ -3506,11 +3489,11 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
 
         # Format title
         if (title is not None) and (bandpass is not None):
-            ax1_title_obj = ax1.set_title(title+ " - Bandpass: " + str(bandpass))
+            ax1_title_obj = ax1.set_title(title+ " - Bandpass: " + str(bandpass), fontsize=title_fontsize)
         elif (title is not None) and (bandpass == None):
-            ax1_title_obj = ax1.set_title(title)
+            ax1_title_obj = ax1.set_title(title, fontsize=title_fontsize)
         elif (title == None) and (bandpass is not None):
-            ax1_title_obj = ax1.set_title("Bandpass: " + str(bandpass))
+            ax1_title_obj = ax1.set_title("Bandpass: " + str(bandpass), fontsize=title_fontsize)
         plt.legend(loc=legend_loc)
     # --------------------------- TIME-FREQUENCY SUBPLOT (SPEC or SCALO) ---------------------------
     tf_subplot = (spec_subplot or scal_subplot)
@@ -3628,30 +3611,65 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         if freq_share_ax is None:
             freq_share_ax = ax2
         subplot_idx += 1
+
         B_plt = B.copy().astype(float)
         B_plt[ix] = np.nan  # mask invalid pixels
+
+        # Decide plotting mode and range
+        use_180 = (str(baz_range) == "180")
+
         if GT_baz is not None:
             # ------------------ DEVIATION MODE ------------------
-            B_dev = wrap180(B_plt - GT_baz)
+            # deviation should always be computed circularly
+            # dev = wrap180(B_plt - float(GT_baz))
+            B_plt -= GT_baz
+            for B_row in range(len(B_plt[:,0])):
+                for B_col in range(len(B_plt[0,:])):
+                    if B_plt[B_row, B_col] < -270: 
+                        B_plt[B_row, B_col] += 360
+                    elif B_plt[B_row, B_col] > 270:
+                        B_plt[B_row, B_col] -= 360
+                    else:
+                        pass
+            Z = B_plt.copy()
+            # if use_180:
+            #     Z = dev                          # [-180, 180)
+            #     vmin, vmax = -180.0, 180.0
+            # else:
+            #     Z = wrap360(dev)                 # [0, 360) representation
+                # vmin, vmax = 0.0, 360.0
+
             pcm1 = ax2.pcolor(
-                t_plot, f_plot, B_dev,
-                cmap=plt.get_cmap(cmap_cyclic), shading='flat'
+                t_plot, f_plot, Z,
+                cmap=plt.get_cmap(cmap_cyclic),
+                shading='flat',
+                vmin=-180, vmax=180
             )
+
+            # Optional override
             if clim_baz is not None:
                 pcm1.set_clim(clim_baz)
-            # else: autoscale tightly around deviation cluster
+
         else:
             # ------------------ RAW AZIMUTH MODE ------------------
-            B_raw = B_plt % 360.0
+            if use_180:
+                Z = wrap180(B_plt)               # [-180, 180)
+                vmin, vmax = -180.0, 180.0
+            else:
+                Z = wrap360(B_plt)               # [0, 360)
+                vmin, vmax = 0.0, 360.0
+
             pcm1 = ax2.pcolor(
-                t_plot, f_plot, B_raw,
-                cmap=plt.get_cmap(cmap_cyclic), shading='flat'
+                t_plot, f_plot, Z,
+                cmap=plt.get_cmap(cmap_cyclic),
+                shading='flat',
+                vmin=vmin, vmax=vmax
             )
+
+            # Optional override
             if clim_baz is not None:
                 pcm1.set_clim(clim_baz)
-            else:
-                vmin, vmax = circular_autoclim_robust_deg(B_raw, q=(5, 95), pad=5)
-                pcm1.set_clim(vmin, vmax)
+
         ax2.set_ylabel('Freq. [Hz]')
         if log_freq:
             ax2.set_yscale('log')
@@ -3667,11 +3685,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         V_plt = V.copy().astype(float)
         V_plt[ix] = None
         pcm2 = ax3.pcolor(t_plot, f_plot, V_plt, cmap=plt.get_cmap(cmap_sequential), shading='flat')
-        if clim_vtr is None:
-            auto = robust_clim(V_plt, q=(5, 95))
-            if auto is not None:
-                pcm2.set_clim(auto)
-        else:
+        if clim_vtr is not None:
             pcm2.set_clim(clim_vtr)
         ax3.set_ylabel('Freq. [Hz]')
         ax3.tick_params(labelbottom=False)
@@ -3693,58 +3707,40 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         cbar_ax = fig.add_axes([0.87, bbox.y0, 0.02, bbox.height])
         cbar = fig.colorbar(pcm1, cax=cbar_ax)
         # -------------------------
-        # MANUAL CLIM MODE
-        # If user supplies clim_baz, let matplotlib handle ticks/range normally.
+        # USER OVERRIDE
         # -------------------------
         if clim_baz is not None:
-            cbar.set_label('Azimuth [°]' if GT_baz is None else 'Azimuth\nDeviation [°]')
-            # nothing else: no snapping, no FixedLocator, no ticklabels, no ylim
-            # (matplotlib defaults apply)
+            cbar.set_label(
+                "Azimuth\nDeviation [°]" if GT_baz is not None else "Azimuth [°]"
+            )
         else:
             # -------------------------
-            # AUTO MODES
+            # FIXED MODES
             # -------------------------
-            vmin, vmax = pcm1.get_clim()
-            # deviation mode (fixed limits)
             if GT_baz is not None:
+                # Decide plotting mode and range
+                baz_range = "180" # manually setting for azimuthal deviation visualization
+                use_180 = (str(baz_range) == "180")
+            if str(baz_range) == "180":
                 pcm1.set_clim(-180, 180)
-                vmin, vmax = pcm1.get_clim()
-                ticks = np.linspace(vmin, vmax, 5)
-                cbar.update_normal(pcm1)
-                cbar.ax.set_ylim(vmin, vmax)
-                cbar.ax.yaxis.set_major_locator(FixedLocator(ticks))
-                cbar.set_ticks(ticks)
-                cbar.set_ticklabels([f"{int(np.round(t))}" for t in ticks])
-                cbar.set_label("Azimuth\nDeviation [°]")
-            # raw azimuth auto mode (snap endpoints, 5 evenly spaced ticks)
+                ticks = [-180, -90, 0, 90, 180]
+                labels = ["-180", "-90", "0", "90", "180"]
+
+            elif str(baz_range) == "360":
+                pcm1.set_clim(0, 360)
+                ticks = [0, 90, 180, 270, 360]
+                labels = ["0", "90", "180", "270", "360"]
             else:
-                base = 10
-                n_inner = 3
-                n_intervals = n_inner + 1
-
-                vmin_s = base * np.floor(vmin / base)
-                vmax_s = base * np.ceil(vmax / base)
-                if vmax_s < vmin_s:
-                    vmax_s += 360
-
-                span = vmax_s - vmin_s
-                step_unit = base * n_intervals
-                span_s = step_unit * np.ceil(span / step_unit)
-                vmax_s = vmin_s + span_s
-
-                pcm1.set_clim(vmin_s, vmax_s)
-                vmin, vmax = pcm1.get_clim()
-                ticks = np.linspace(vmin, vmax, n_intervals + 1)
-
-                cbar.update_normal(pcm1)
-                cbar.ax.set_ylim(vmin, vmax)
-                cbar.ax.yaxis.set_major_locator(FixedLocator(ticks))
-                cbar.set_ticks(ticks)
-                cbar.set_ticklabels([f"{int(np.round(t)) % 360}" for t in ticks])
-                cbar.set_label("Azimuth [°]")
-            # prevent pruning / offsets (safe to do in auto modes)
-            cbar.ax.yaxis.get_offset_text().set_visible(False)
-            cbar.ax.tick_params(pad=2)
+                raise ValueError("baz_range must be '180' or '360'")
+            cbar.set_ticks(ticks)
+            cbar.set_ticklabels(labels)
+            # Label depends ONLY on GT_baz
+            cbar.set_label(
+                "Azimuth\nDeviation [°]" if GT_baz is not None else "Azimuth [°]"
+            )
+        # housekeeping
+        cbar.ax.yaxis.get_offset_text().set_visible(False)
+        cbar.ax.tick_params(pad=2)
 
     # ----------- Trace velocity colorbar ----------
     if vel_subplot:
@@ -3891,18 +3887,18 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
             abs_peak_amp = np.max(np.abs(beam_sig_data)) / len(st_filt)
             peak_to_peak = (beam_sig_data.max() - beam_sig_data.min()) / len(st_filt)
             if amp_units == 'Amplitude':
-                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Beam SNR: %.3f'%beam_snr + ' - Peak Amp: %.3f'%abs_peak_amp + ' - P2P Amp: %.3f'%peak_to_peak
+                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Beam SNR: %.3f'%beam_snr + ' - Peak Amp: %.3e'%abs_peak_amp + ' - P2P Amp: %.3e'%peak_to_peak
             else:
-                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Beam SNR: %.3f'%beam_snr + ' - Peak Amp: %.3f'%abs_peak_amp + ' [' + units_str + '] - P2P Amp: %.3f'%peak_to_peak + ' [' + units_str + ']'
+                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Beam SNR: %.3f'%beam_snr + ' - Peak Amp: %.3e'%abs_peak_amp + ' [' + units_str + '] - P2P Amp: %.3e'%peak_to_peak + ' [' + units_str + ']'
         elif plot_beam_metrics == False:
             if amp_units == 'Amplitude':
-                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Peak Amp: %.3f'%abs_peak_amp + ' - P2P Amp: %.3f'%peak_to_peak
+                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Peak Amp: %.3e'%abs_peak_amp + ' - P2P Amp: %.3e'%peak_to_peak
             else:
-                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Peak Amp: %.3f'%abs_peak_amp + ' [' + units_str + '] - P2P Amp: %.3f'%peak_to_peak + ' [' + units_str + ']'
+                ax1_new_title = ax1_current_title + '\nAvg SNR: %.3f'%avg_snr + ' - Peak Amp: %.3e'%abs_peak_amp + ' [' + units_str + '] - P2P Amp: %.3e'%peak_to_peak + ' [' + units_str + ']'
         ax1_title_obj.set_text(ax1_new_title)
     #-----------------------------------------------------------------------------------------------------------------#
     # Save or return beamformed stream if requested
-    if fname_plot: fig.savefig(fname_plot)
+    if fname_plot: fig.savefig(fname_plot, dpi=300)
     if return_beam and beamform_data:
         return add_beam_to_stream(st, beamform(t_shifts, st, st[0].stats.station)[1])
     elif return_beam and not beamform_data:
@@ -3917,7 +3913,7 @@ def plot_spectrogram(st, element=None,
                     t_lim=None, amp_lim=None,
 
                     ############### Spectrogram ################################################
-                    nperseg=2**8, noverlap_percent=50, f_lim=None, v_lim=None, log_scale=False, colormap='viridis_r', 
+                    nperseg=2**8, noverlap_percent=50, f_lim=None, v_lim=None, log_scale=False, colormap='viridis', 
                     shading='gouraud', log_normalize=True, colorbar_location='bottom', colorbar_pad=0.25, plot_UTC=False, 
                     UTC_time_interval=None,
 
@@ -3968,9 +3964,9 @@ def plot_spectrogram(st, element=None,
         st = st.resample(int(st[0].stats.sampling_rate))
         st = st.merge()
     # Filter
+    st_taper = st.copy()
+    st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
     if bandpass is not None:
-        st_taper = st.copy()
-        st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
         st_filt = st_taper.copy()
         try:
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
@@ -3978,10 +3974,15 @@ def plot_spectrogram(st, element=None,
             st_filt = st_taper.copy().split()
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
             st_filt = st_filt.merge() 
-    if element is not None:
-        tr = st_filt.select(station=element)[0]
+        if element is not None:
+            tr = st_filt.select(station=element)[0]
+        else:
+            tr = st_filt[0].copy()
     else:
-        tr = st_filt[0].copy()
+        if element is not None:
+            tr = st_taper.select(station=element)[0]
+        else:
+            tr = st_taper[0].copy()
     # Construct time vector
     t = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
     t, data = fix_lengths(t, tr.data)
@@ -4057,9 +4058,8 @@ def plot_spectrogram(st, element=None,
         Sxx = np.log10(Sxx + 1e-10) # log normalize (small constant added to avoid log10(0))
     # Plot spectrogram
     ax2 = plt.subplot(2,1,2, sharex=ax1)
-    cmap = cm.get_cmap(colormap, 256)
-    cmap = cmap(np.linspace(2,0.001,100))
-    cmap = ListedColormap(cmap)
+    base = cm.get_cmap(colormap, 256)
+    cmap = ListedColormap(base(np.linspace(0.05, 0.95, 256)))
     if f_lim is not None:
         ix = np.where((f >= f_lim[0]) & (f <= f_lim[1]))
     else:
@@ -4094,8 +4094,9 @@ def plot_spectrogram(st, element=None,
         raise Exception("Can't have t_lim and plot_UTC set to True, since t_lim is relative.")
     ax2.set_ylabel('Frequency [Hz]')
     # Save figure
+    plt.tight_layout()
     if fname_plot is not None:
-        fig.savefig(fname_plot)
+        fig.savefig(fname_plot, dpi=300)
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -4107,7 +4108,7 @@ def plot_scalogram(st, element=None,
 
                     ############### Scalogram ################################################
                     scale_range=[1,5500], scale_res=200, wavelet='cmor2.25-2.75', log_normalize=True,
-                    f_lim=None, v_lim=None, colormap='seismic_r', shading='gouraud', log_scale=True, 
+                    f_lim=None, v_lim=None, colormap='seismic', shading='gouraud', log_scale=True, 
                     colorbar_location='bottom', colorbar_pad=0.25, plot_UTC=False, UTC_time_interval=None,
                     use_filtered_data=False,
 
@@ -4166,9 +4167,9 @@ def plot_scalogram(st, element=None,
         dt = st_trim[0].stats.starttime
         st_trim.trim(dt+trim_stream[0], dt+trim_stream[1])
     # Filter
+    st_taper = st_trim.copy()
+    st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
     if bandpass is not None:
-        st_taper = st_trim.copy()
-        st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
         st_filt = st_taper.copy()
         try:
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
@@ -4176,10 +4177,15 @@ def plot_scalogram(st, element=None,
             st_filt = st_taper.copy().split()
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
             st_filt = st_filt.merge() 
-    if element is not None:
-        tr = st_filt.select(station=element)[0]
+        if element is not None:
+            tr = st_filt.select(station=element)[0]
+        else:
+            tr = st_filt[0].copy()
     else:
-        tr = st_filt[0].copy()
+        if element is not None:
+            tr = st_taper.select(station=element)[0]
+        else:
+            tr = st_taper[0].copy()
     # Construct time vector
     t = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
     t, data = fix_lengths(t, tr.data)
@@ -4270,18 +4276,18 @@ def plot_scalogram(st, element=None,
         ix = np.where((freqs >= (f_lim[0]) - (f_lim[0]/10) ) & (freqs <= (f_lim[1]) + (f_lim[1]/10))) # add small constant to make sure range encompasses both f_lims
     else:
         ix = np.where((freqs >= min(freqs)) & (freqs <= (tr.stats.sampling_rate/2) + ((tr.stats.sampling_rate/2)/10))) # need to add small constant to make sure Nyquist is encompassed in range
-    if v_lim is not None:
-        vmin = v_lim[0]; vmax = v_lim[1]
-    else:
-        vmin = scalogram[ix].min(); vmax = scalogram[ix].max()
+    ix = ix[0]
     freqs = freqs[ix]
-    scalogram = scalogram[ix,:][0]
+    scalogram = scalogram[ix,:]
+    if v_lim is not None:
+        vmin, vmax = v_lim
+    else:
+        vmin, vmax = np.nanpercentile(scalogram, [10,95])
     #-----------------------------------------------------------------------------------------------------------------------#
     # Plot scalogram
     ax2 = fig.add_subplot(2,1,2, sharex=ax1)
-    cmap = cm.get_cmap(colormap, 256)
-    cmap = cmap(np.linspace(2,0.001,100))
-    cmap = ListedColormap(cmap)
+    base = cm.get_cmap(colormap, 256)
+    cmap = ListedColormap(base(np.linspace(0.05, 0.95, 256)))
     plt.pcolormesh(t, freqs, scalogram, cmap=cmap, shading=shading, vmin=vmin, vmax=vmax)
     colorbar = plt.colorbar(location=colorbar_location, pad=colorbar_pad)
     if amp_units == 'Amplitude': # make sure amplitude units are input properly for plotting
@@ -4310,8 +4316,9 @@ def plot_scalogram(st, element=None,
         raise Exception("Can't have t_lim and plot_UTC set to True, since t_lim is relative.")
     ax2.set_ylabel('Frequency [Hz]')
     # Save figure
+    plt.tight_layout()
     if fname_plot is not None:
-        fig.savefig(fname_plot)
+        fig.savefig(fname_plot, dpi=300)
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -4641,8 +4648,9 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
             plt.title(title2 + ' Correlation Matrix', fontsize=ax2_title_fontsize)
     ax2.tick_params(axis='both', labelsize=ax2_ticklabel_size)
     # Save figure
+    plt.tight_layout()
     if fname_plot is not None:
-        fig.savefig(fname_plot)
+        fig.savefig(fname_plot, dpi=300)
     if return_xcorr_params == True:
         return xcorr_coef_matrix, xcorr_lag_times, ref_signal
 '----------------------------------------------'
@@ -4916,3 +4924,425 @@ def train_models(split, epochs=1000, batch_size=32, lr=1e-3, patience=50, n_spli
 '----------------------------------------------------------------------------------------------------------------'
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 '--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+
+'--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+'----------------------------------------------------------------------------------------------------------------'
+'---------------------------------------------------------------------------'
+'----------------------------------------------'
+############### ############### ###############
+###############  Command Line Client ##########
+############### ############### ###############
+
+import json, argparse, hashlib, requests
+
+from io import BytesIO
+from pathlib import Path
+from sqlalchemy.orm import Session
+from pisces.io.trace import wfdisc2trace
+from pisces import request
+
+from obspy import read_inventory
+from obspy.clients.fdsn import Client
+from obspy.clients.fdsn.header import FDSNNoDataException
+
+def validate_utcdate_time(value: str) -> str:
+    '''----------------------------------------------------------------------------------------------------------------------------------
+    Validates correct time format from command line
+    ----------------------------------------------------------------------------------------------------------------------------------'''
+    if not UTCDateTime(value):
+        raise argparse.ArgumentTypeError(
+            "Time must be in format YYYY-MM-DDTHH:MM:SS "
+            "(e.g. 2025-10-10T00:00:00)"
+        )
+    return value
+
+def parse_args():
+    '''----------------------------------------------------------------------------------------------------------------------------------
+    Reads in command line arguments (currenlty only options are --paramfile, --starttime, --endtime
+    ----------------------------------------------------------------------------------------------------------------------------------'''
+    parser = argparse.ArgumentParser(
+        description="Run Cardinal pipeline with parameter file"
+    )
+    #-----------------------------------------------------------------------------------------------------------------------#
+    # adding args. More args can be added
+    parser.add_argument(
+        "--paramfile",
+        type=Path,
+        required=True,
+        help="Path to JSON parameter file"
+    )
+
+    parser.add_argument(
+        "--starttime",
+        type=validate_utcdate_time,
+        required=True,
+        help="Start time (YYYY-MM-DDTHH:MM:SS)"
+    )
+
+    parser.add_argument(
+        "--endtime",
+        type=validate_utcdate_time,
+        required=True,
+        help="End time (YYYY-MM-DDTHH:MM:SS)"
+    )
+
+    args = parser.parse_args()
+
+    if not args.paramfile.exists():
+        raise FileNotFoundError(f"Param file not found: {args.paramfile}")
+
+    with args.paramfile.open("r") as f:
+        params = json.load(f)
+
+    #-----------------------------------------------------------------------------------------------------------------------#
+    # Adding starttime and endtime args to params
+
+    params["starttime"] = args.starttime
+    params["endtime"] = args.endtime
+
+    return params
+
+_ISO_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+def _validate_iso_time(value: str) -> None:
+    if not _ISO_TIME_RE.match(value):
+        raise ValueError(
+            f"Time must be YYYY-MM-DDTHH:MM:SS (got {value})"
+        )
+
+
+def safe_filename(s: str) -> str:
+    """
+    Make filenames filesystem-safe and remove wildcard characters.
+    Examples:
+        PSZI* -> PSZI_ALL
+        BH? -> BH_ANY
+    """
+    s = s.replace("*", "_ALL").replace("?", "_ANY")
+    s = s.strip("_")
+    return "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in s)
+
+
+def write_array_site(inv, outpath: Path) -> None:
+    """
+    Write an Antelope-style array.site file:
+        STA LAT LON ELEV_KM
+    """
+    lines = []
+
+    for net in inv:
+        for sta in net.stations:
+            elev_m = sta.elevation if sta.elevation is not None else 0.0
+            elev_km = elev_m / 1000.0
+
+            lines.append(
+                f"{sta.code:<8s} "
+                f"{sta.latitude:10.6f} "
+                f"{sta.longitude:11.6f} "
+                f"{elev_km:8.4f}"
+            )
+
+    outpath.write_text("\n".join(sorted(lines)) + "\n")
+
+def get_infrasound_waveforms(
+    *,
+    provider: str,
+    network: str,
+    station: str,
+    location: str,
+    channel: str,
+    starttime: str,
+    endtime: str,
+    mseed_out: Path,
+    site_out: Path,
+    format: str = "MSEED",
+    korea_arrays: bool = False,
+    verbose: bool = False,
+):
+    """
+    Download infrasound waveforms and write:
+      - MiniSEED waveform file
+      - Antelope-style array.site file
+
+    Parameters mirror the old argparse interface.
+    """
+
+    # ---- validate inputs ----
+    _validate_iso_time(starttime)
+    _validate_iso_time(endtime)
+
+    t0 = UTCDateTime(starttime)
+    t1 = UTCDateTime(endtime)
+    if t1 <= t0:
+        raise ValueError("endtime must be after starttime")
+
+    mseed_out = Path(mseed_out)
+    site_out = Path(site_out)
+    mseed_out.parent.mkdir(parents=True, exist_ok=True)
+    site_out.parent.mkdir(parents=True, exist_ok=True)
+
+    # ---- conditional client ----
+    if korea_arrays:
+        print('retrieving data from Korea')
+        BASE = "http://niab3.geophy.smu.edu:8080"
+        AUTH = ("SMU_user", "IronMan-2026")
+
+        station_url = f"{BASE}/fdsnws/station/1/query"
+        dataselect_url = f"{BASE}/fdsnws/dataselect/1/query"
+
+        station_params = dict(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            starttime=t0.strftime("%Y-%m-%dT%H:%M:%S"),
+            endtime=t1.strftime("%Y-%m-%dT%H:%M:%S"),
+            level="station",
+        )
+
+        data_params = dict(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            starttime=t0.strftime("%Y-%m-%dT%H:%M:%S"),
+            endtime=t1.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+
+        # StationXML
+        r = requests.get(station_url, params=station_params, auth=AUTH, timeout=60)
+        r.raise_for_status()
+        inv = read_inventory(BytesIO(r.content))
+
+        write_array_site(inv, site_out)
+        if verbose:
+            print(f"[OK] Wrote site file: {site_out}")
+
+        # MiniSEED
+        r = requests.get(dataselect_url, params=data_params, auth=AUTH, timeout=60)
+        if r.status_code == 204:
+            raise RuntimeError("No waveform data returned (HTTP 204).")
+        r.raise_for_status()
+        st = read(BytesIO(r.content))
+
+    else:
+        client = Client(provider)
+
+        # ---- station metadata → array.site ----
+        inv = client.get_stations(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            starttime=t0,
+            endtime=t1,
+            level="station",
+        )
+
+        write_array_site(inv, site_out)
+
+        if verbose:
+            print(f"[OK] Wrote site file: {site_out}")
+
+        # ---- waveforms ----
+        try:
+            st = client.get_waveforms(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=t0,
+                endtime=t1,
+                attach_response=False,
+            )
+        except FDSNNoDataException as e:
+            raise RuntimeError(f"No waveform data returned: {e}")
+
+    if len(st) == 0:
+        raise RuntimeError("Empty waveform stream returned")
+
+    try:
+        st.merge(method=1, fill_value=None)
+    except Exception:
+        pass
+
+    if format.upper() == "MSEED":
+        st.write(str(mseed_out), format="MSEED")
+    else:
+        raise NotImplementedError("Only MSEED output is supported in function mode")
+
+    if verbose:
+        print(f"[OK] Wrote MiniSEED: {mseed_out} ({len(st)} traces)")
+        for tr in st:
+            print(f"     {tr.id}  sr={tr.stats.sampling_rate}  npts={tr.stats.npts}")
+
+    return {
+        "stream": st,
+        "inventory": inv,
+        "mseed": mseed_out,
+        "site": site_out,
+    }
+
+def fetch_wfdisc_rows(sta, chan, start, end, conn_str, data_filepath, array_coords_filepath):
+
+    ### Query site table for array elements ###
+    statement_site = "select * from site where refsta='%s'" % (sta)
+    usr = conn_str[0]
+    passwd = conn_str[1]
+    dsn = f'{conn_str[2]}:{conn_str[3]}/{conn_str[4]}'
+    connection = oracledb.connect(user=usr, password=passwd, dsn=dsn)
+    SITE_df = pd.read_sql(statement_site, connection)
+    SITE_ARRRAY_df = SITE_df.loc[(SITE_df['STATYPE'] == 'ar')]
+    SITE_df = SITE_df.loc[(SITE_df['STATYPE'] == 'ss')]
+    print(SITE_df)
+    connection.close()
+
+    site_df_string = SITE_df[['STA', 'LAT', 'LON', 'ELEV']].to_string(
+        header=False,
+        index=False,
+        float_format="%.6f",
+        col_space=12
+    )
+
+    ### Connect to Oracle database ###
+    db_string = f'{conn_str[0]}:{conn_str[1]}@{conn_str[2]}:{conn_str[3]}/{conn_str[4].split(".")[0]}'
+    print(db_string)
+    e = sa.create_engine(f'oracle://{db_string}')
+    session = Session(bind=e)
+
+    ### Query for waveforms ###
+    st = Stream()
+    for row in SITE_df.iterrows():
+        elem = row[1]['STA']
+        wf_disc_rows = request.get_wfdisc_rows(session, Wfdisc, elem, chan, start, end)
+        #print(wf_disc_rows)
+        for wf in wf_disc_rows:
+            #print(wf)
+            if wf.datatype in ["e1", "t4", "s4", "f4"] and wf.segtype in ["o", "-"]:
+                try:  ### it is possible the a wfdisc entry in the DB does not have a .w at the dfile location ###
+                    tr = wfdisc2trace(wf)
+                except Exception as e:
+                    #print(e)
+                    continue
+            else:
+                continue
+            tr_tmp = tr.slice(UTCDateTime(start), UTCDateTime(end))
+            st.append(tr_tmp)
+    st.merge(method=0, fill_value=0)
+    st_copy = st.copy()
+    st_copy.trim(UTCDateTime(start), UTCDateTime(end), pad=True, fill_value=0)
+
+    print(st_copy)
+
+    ### Saving waveforms as MiniSEED ###
+    mseed_path = Path(data_filepath)
+    mseed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    outpath = f"{data_filepath}"
+    st.write(str(outpath), format="MSEED")
+    print(f"Wrote {outpath} ({len(st)} traces)")
+
+    ### Saving site file ###
+    with open(array_coords_filepath, "w") as f:
+        f.write(site_df_string)
+    print(f"Array metadata saved successfully to {array_coords_filepath}")
+
+    return SITE_ARRRAY_df
+
+def inputs_dets_to_infrapy_json(df: dict, sta: str, chan: str, t0: float, st: Stream, data_filepath: str, sitedf: dict):
+    tmp_infrapy_list = []
+    for count, i in enumerate(df.iterrows()):
+        det_Name = ""
+        det_Fstat_time = str(UTCDateTime(i[1]['start_time']) + t0)
+        det_semb = i[1]['max_semb']
+        det_vel = i[1]['mean_vel']
+        det_az = i[1]['mean_baz']
+        elem_lat = sitedf['LAT']
+        elem_lon = sitedf['LON']
+        elem_elev = sitedf['ELEV']
+        det_startUTC = str(UTCDateTime(i[1]['start_time']) + t0)
+        det_endUTC = str(UTCDateTime(i[1]['end_time']) + t0)
+        det_array_dim = len(sitedf)
+        det_method = ""
+        det_event = ""
+        det_note = ""
+        det_sta = sta.replace("*", "")
+        det_chan = chan.replace("*", "")
+        tmp_infrapy_list.append([det_Name, det_Fstat_time, det_semb, det_vel, det_az, elem_lat, elem_lon, elem_elev,
+                                 det_startUTC, det_endUTC, det_array_dim, det_method, det_event, det_note, det_sta, det_chan])
+    infrapy_json_df = pd.DataFrame(tmp_infrapy_list, columns=['Name', 'Peak F-Stat Time (UTC)', 'F Statistic', 'Trace Velocity', 'Back Azimuth',
+                                                              'Latitude', 'Longitude', 'Elevation', 'Start', 'End', 'Array Dimension', 'Method',
+                                                              'Event', 'Note', 'Station', 'Channel'])
+
+    start_tag = UTCDateTime(det_startUTC).strftime("%Y%m%dT%H%M%S")
+    end_tag = UTCDateTime(det_endUTC).strftime("%Y%m%dT%H%M%S")
+    det_path = Path(data_filepath)
+    det_parent_path = str(det_path.parent)
+    det_path = f'{det_parent_path}/{sta}_{chan}_{start_tag}_{end_tag}.json'
+    det_path = det_path.replace("*", "")
+    infrapy_json_df.to_json(det_path, orient='records', indent=4)
+
+def _jsonable(x):
+    # convert numpy/pandas-ish stuff to JSON-serializable types
+    if isinstance(x, (np.integer, np.int64)): return int(x)
+    if isinstance(x, (np.floating, np.float64)): return float(x)
+    if isinstance(x, (np.ndarray,)): return x.tolist()
+    if isinstance(x, (pd.Timestamp,)): return x.isoformat()
+    return x
+
+def make_adaptive_key(st, f_bands, array_type="infrasound"):
+    """
+    Create a stable hash representing:
+      - full array configuration (station names + coordinates)
+      - frequency bands (fmin/fmax and anything else in f_bands)
+      - array_type
+    """
+    # 1) Array geometry: station -> (lat, lon, elev) (or your available metadata)
+    # Use st (stream) to extract station metadata deterministically.
+    stations = []
+    for tr in st:
+        sta = tr.stats.station
+        # robustly try to read coords if present
+        coords = {}
+        for k in ("latitude", "longitude", "elevation"):
+            v = getattr(tr.stats, k, None)
+            if v is None and hasattr(tr.stats, "sac"):
+                v = tr.stats.sac.get(k, None)
+            coords[k] = v
+        stations.append((sta, coords["latitude"], coords["longitude"], coords["elevation"]))
+
+    stations = sorted(set(stations), key=lambda x: x[0])
+
+    # 2) Frequency bands: sort columns + rows deterministically
+    if hasattr(f_bands, "copy"):
+        fb = f_bands.copy()
+        # common columns: fmin/fmax; keep all columns but stable ordering
+        fb = fb.sort_values(by=[c for c in ["fmin", "fmax"] if c in fb.columns]).reset_index(drop=True)
+        fb = fb[[c for c in sorted(fb.columns)]]
+        f_bands_payload = fb.to_dict(orient="list")
+    else:
+        f_bands_payload = f_bands  # fallback
+
+    payload = {
+        "array_type": array_type,
+        "stations": stations,
+        "f_bands": f_bands_payload,
+    }
+
+    s = json.dumps(payload, default=_jsonable, sort_keys=True)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+def load_subarrays_cache(cache_dir, key):
+    path = os.path.join(cache_dir, f"subarrays_{key}.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return None
+
+def save_subarrays_cache(cache_dir, key, subarrays_stnms):
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"subarrays_{key}.json")
+    with open(path, "w") as f:
+        json.dump(subarrays_stnms, f, indent=2)
+    return path
