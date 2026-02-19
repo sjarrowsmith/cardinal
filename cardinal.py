@@ -4924,3 +4924,449 @@ def train_models(split, epochs=1000, batch_size=32, lr=1e-3, patience=50, n_spli
 '----------------------------------------------------------------------------------------------------------------'
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 '--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+
+'--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+'----------------------------------------------------------------------------------------------------------------'
+'---------------------------------------------------------------------------'
+'----------------------------------------------'
+############### ############### ###############
+###############  Command Line Client ##########
+############### ############### ###############
+
+import json, argparse, hashlib, requests
+
+from io import BytesIO
+from pathlib import Path
+from sqlalchemy.orm import Session
+from pisces.io.trace import wfdisc2trace
+from pisces import request
+
+from obspy import read_inventory
+from obspy.clients.fdsn import Client
+from obspy.clients.fdsn.header import FDSNNoDataException
+
+def validate_utcdate_time(value: str) -> str:
+    '''----------------------------------------------------------------------------------------------------------------------------------
+    Validates correct time format from command line
+    ----------------------------------------------------------------------------------------------------------------------------------'''
+    if not UTCDateTime(value):
+        raise argparse.ArgumentTypeError(
+            "Time must be in format YYYY-MM-DDTHH:MM:SS "
+            "(e.g. 2025-10-10T00:00:00)"
+        )
+    return value
+
+def parse_args():
+    '''----------------------------------------------------------------------------------------------------------------------------------
+    Reads in command line arguments (currenlty only options are --paramfile, --starttime, --endtime
+    ----------------------------------------------------------------------------------------------------------------------------------'''
+    parser = argparse.ArgumentParser(
+        description="Run Cardinal pipeline with parameter file"
+    )
+    #-----------------------------------------------------------------------------------------------------------------------#
+    # adding args. More args can be added
+    parser.add_argument(
+        "--paramfile",
+        type=Path,
+        required=True,
+        help="Path to JSON parameter file"
+    )
+
+    parser.add_argument(
+        "--starttime",
+        type=validate_utcdate_time,
+        required=True,
+        help="Start time (YYYY-MM-DDTHH:MM:SS)"
+    )
+
+    parser.add_argument(
+        "--endtime",
+        type=validate_utcdate_time,
+        required=True,
+        help="End time (YYYY-MM-DDTHH:MM:SS)"
+    )
+
+    # Optional auth args
+    parser.add_argument(
+        "--user",
+        type=str,
+        default=None,
+        help="Optional username for authenticated data access"
+    )
+
+    parser.add_argument(
+        "--password",
+        type=str,
+        default=None,
+        help="Optional password for authenticated data access"
+    )
+
+    args = parser.parse_args()
+
+    if not args.paramfile.exists():
+        raise FileNotFoundError(f"Param file not found: {args.paramfile}")
+
+    if (args.user is None) ^ (args.password is None):
+        raise ValueError("Both --user and --password must be provided together")
+
+    with args.paramfile.open("r") as f:
+        params = json.load(f)
+
+    #-----------------------------------------------------------------------------------------------------------------------#
+    # Adding starttime and endtime args to params
+
+    params["starttime"] = args.starttime
+    params["endtime"] = args.endtime
+    params["user"] = args.user
+    params["password"] = args.password
+
+    return params
+
+_ISO_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+def _validate_iso_time(value: str) -> None:
+    if not _ISO_TIME_RE.match(value):
+        raise ValueError(
+            f"Time must be YYYY-MM-DDTHH:MM:SS (got {value})"
+        )
+
+
+def safe_filename(s: str) -> str:
+    """
+    Make filenames filesystem-safe and remove wildcard characters.
+    Examples:
+        PSZI* -> PSZI_ALL
+        BH? -> BH_ANY
+    """
+    s = s.replace("*", "_ALL").replace("?", "_ANY")
+    s = s.strip("_")
+    return "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in s)
+
+
+def write_array_site(inv, outpath: Path) -> None:
+    """
+    Write an Antelope-style array.site file:
+        STA LAT LON ELEV_KM
+    """
+    lines = []
+
+    for net in inv:
+        for sta in net.stations:
+            elev_m = sta.elevation if sta.elevation is not None else 0.0
+            elev_km = elev_m / 1000.0
+
+            lines.append(
+                f"{sta.code:<8s} "
+                f"{sta.latitude:10.6f} "
+                f"{sta.longitude:11.6f} "
+                f"{elev_km:8.4f}"
+            )
+
+    outpath.write_text("\n".join(sorted(lines)) + "\n")
+
+from typing import Optional, Tuple
+
+def get_infrasound_waveforms(
+    *,
+    provider: str,
+    network: str,
+    station: str,
+    location: str,
+    channel: str,
+    starttime: str,
+    endtime: str,
+    mseed_out: Path,
+    site_out: Path,
+    format: str = "MSEED",
+    korea_arrays: Optional[Tuple[bool, str, str]] = None,
+    verbose: bool = False,
+):
+    """
+    Download infrasound waveforms and write:
+      - MiniSEED waveform file
+      - Antelope-style array.site file
+
+    Parameters mirror the old argparse interface.
+    """
+
+    # ---- validate inputs ----
+    _validate_iso_time(starttime)
+    _validate_iso_time(endtime)
+
+    t0 = UTCDateTime(starttime)
+    t1 = UTCDateTime(endtime)
+    if t1 <= t0:
+        raise ValueError("endtime must be after starttime")
+
+    mseed_out = Path(mseed_out)
+    site_out = Path(site_out)
+    mseed_out.parent.mkdir(parents=True, exist_ok=True)
+    site_out.parent.mkdir(parents=True, exist_ok=True)
+
+    # ---- conditional client ----
+    if korea_arrays:
+        enabled, user, password = korea_arrays
+        if enabled:
+            print('retrieving data from Korea with user = {user}')
+            BASE = "http://niab3.geophy.smu.edu:8080"
+            AUTH = (user, password)
+
+            station_url = f"{BASE}/fdsnws/station/1/query"
+            dataselect_url = f"{BASE}/fdsnws/dataselect/1/query"
+
+            station_params = dict(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=t0.strftime("%Y-%m-%dT%H:%M:%S"),
+                endtime=t1.strftime("%Y-%m-%dT%H:%M:%S"),
+                level="station",
+            )
+
+            data_params = dict(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=t0.strftime("%Y-%m-%dT%H:%M:%S"),
+                endtime=t1.strftime("%Y-%m-%dT%H:%M:%S"),
+            )
+
+            # StationXML
+            r = requests.get(station_url, params=station_params, auth=AUTH, timeout=60)
+            r.raise_for_status()
+            inv = read_inventory(BytesIO(r.content))
+
+            write_array_site(inv, site_out)
+            if verbose:
+                print(f"[OK] Wrote site file: {site_out}")
+
+            # MiniSEED
+            r = requests.get(dataselect_url, params=data_params, auth=AUTH, timeout=60)
+            if r.status_code == 204:
+                raise RuntimeError("No waveform data returned (HTTP 204).")
+            r.raise_for_status()
+            st = read(BytesIO(r.content))
+
+    else:
+        client = Client(provider)
+
+        # ---- station metadata → array.site ----
+        inv = client.get_stations(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            starttime=t0,
+            endtime=t1,
+            level="station",
+        )
+
+        write_array_site(inv, site_out)
+
+        if verbose:
+            print(f"[OK] Wrote site file: {site_out}")
+
+        # ---- waveforms ----
+        try:
+            st = client.get_waveforms(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=t0,
+                endtime=t1,
+                attach_response=False,
+            )
+        except FDSNNoDataException as e:
+            raise RuntimeError(f"No waveform data returned: {e}")
+
+    if len(st) == 0:
+        raise RuntimeError("Empty waveform stream returned")
+
+    try:
+        st.merge(method=1, fill_value=None)
+    except Exception:
+        pass
+
+    if format.upper() == "MSEED":
+        st.write(str(mseed_out), format="MSEED")
+    else:
+        raise NotImplementedError("Only MSEED output is supported in function mode")
+
+    if verbose:
+        print(f"[OK] Wrote MiniSEED: {mseed_out} ({len(st)} traces)")
+        for tr in st:
+            print(f"     {tr.id}  sr={tr.stats.sampling_rate}  npts={tr.stats.npts}")
+
+    return {
+        "stream": st,
+        "inventory": inv,
+        "mseed": mseed_out,
+        "site": site_out,
+    }
+
+def fetch_wfdisc_rows(sta, chan, start, end, conn_str, data_filepath, array_coords_filepath):
+
+    ### Query site table for array elements ###
+    statement_site = "select * from site where refsta='%s'" % (sta)
+    usr = conn_str[0]
+    passwd = conn_str[1]
+    dsn = f'{conn_str[2]}:{conn_str[3]}/{conn_str[4]}'
+    connection = oracledb.connect(user=usr, password=passwd, dsn=dsn)
+    SITE_df = pd.read_sql(statement_site, connection)
+    SITE_ARRRAY_df = SITE_df.loc[(SITE_df['STATYPE'] == 'ar')]
+    SITE_df = SITE_df.loc[(SITE_df['STATYPE'] == 'ss')]
+    print(SITE_df)
+    connection.close()
+
+    site_df_string = SITE_df[['STA', 'LAT', 'LON', 'ELEV']].to_string(
+        header=False,
+        index=False,
+        float_format="%.6f",
+        col_space=12
+    )
+
+    ### Connect to Oracle database ###
+    db_string = f'{conn_str[0]}:{conn_str[1]}@{conn_str[2]}:{conn_str[3]}/{conn_str[4].split(".")[0]}'
+    print(db_string)
+    e = sa.create_engine(f'oracle://{db_string}')
+    session = Session(bind=e)
+
+    ### Query for waveforms ###
+    st = Stream()
+    for row in SITE_df.iterrows():
+        elem = row[1]['STA']
+        wf_disc_rows = request.get_wfdisc_rows(session, Wfdisc, elem, chan, start, end)
+        #print(wf_disc_rows)
+        for wf in wf_disc_rows:
+            #print(wf)
+            if wf.datatype in ["e1", "t4", "s4", "f4"] and wf.segtype in ["o", "-"]:
+                try:  ### it is possible the a wfdisc entry in the DB does not have a .w at the dfile location ###
+                    tr = wfdisc2trace(wf)
+                except Exception as e:
+                    #print(e)
+                    continue
+            else:
+                continue
+            tr_tmp = tr.slice(UTCDateTime(start), UTCDateTime(end))
+            st.append(tr_tmp)
+    st.merge(method=0, fill_value=0)
+    st_copy = st.copy()
+    st_copy.trim(UTCDateTime(start), UTCDateTime(end), pad=True, fill_value=0)
+
+    print(st_copy)
+
+    ### Saving waveforms as MiniSEED ###
+    mseed_path = Path(data_filepath)
+    mseed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    outpath = f"{data_filepath}"
+    st.write(str(outpath), format="MSEED")
+    print(f"Wrote {outpath} ({len(st)} traces)")
+
+    ### Saving site file ###
+    with open(array_coords_filepath, "w") as f:
+        f.write(site_df_string)
+    print(f"Array metadata saved successfully to {array_coords_filepath}")
+
+    return SITE_ARRRAY_df
+
+def inputs_dets_to_infrapy_json(df: dict, sta: str, chan: str, t0: float, st: Stream, data_filepath: str, sitedf: dict):
+    tmp_infrapy_list = []
+    for count, i in enumerate(df.iterrows()):
+        det_Name = ""
+        det_Fstat_time = str(UTCDateTime(i[1]['start_time']) + t0)
+        det_semb = i[1]['max_semb']
+        det_vel = i[1]['mean_vel']
+        det_az = i[1]['mean_baz']
+        elem_lat = sitedf['LAT']
+        elem_lon = sitedf['LON']
+        elem_elev = sitedf['ELEV']
+        det_startUTC = str(UTCDateTime(i[1]['start_time']) + t0)
+        det_endUTC = str(UTCDateTime(i[1]['end_time']) + t0)
+        det_array_dim = len(sitedf)
+        det_method = ""
+        det_event = ""
+        det_note = ""
+        det_sta = sta.replace("*", "")
+        det_chan = chan.replace("*", "")
+        tmp_infrapy_list.append([det_Name, det_Fstat_time, det_semb, det_vel, det_az, elem_lat, elem_lon, elem_elev,
+                                 det_startUTC, det_endUTC, det_array_dim, det_method, det_event, det_note, det_sta, det_chan])
+    infrapy_json_df = pd.DataFrame(tmp_infrapy_list, columns=['Name', 'Peak F-Stat Time (UTC)', 'F Statistic', 'Trace Velocity', 'Back Azimuth',
+                                                              'Latitude', 'Longitude', 'Elevation', 'Start', 'End', 'Array Dimension', 'Method',
+                                                              'Event', 'Note', 'Station', 'Channel'])
+
+    start_tag = UTCDateTime(det_startUTC).strftime("%Y%m%dT%H%M%S")
+    end_tag = UTCDateTime(det_endUTC).strftime("%Y%m%dT%H%M%S")
+    det_path = Path(data_filepath)
+    det_parent_path = str(det_path.parent)
+    det_path = f'{det_parent_path}/{sta}_{chan}_{start_tag}_{end_tag}.json'
+    det_path = det_path.replace("*", "")
+    infrapy_json_df.to_json(det_path, orient='records', indent=4)
+def _jsonable(x):
+    # convert numpy/pandas-ish stuff to JSON-serializable types
+    if isinstance(x, (np.integer, np.int64)): return int(x)
+    if isinstance(x, (np.floating, np.float64)): return float(x)
+    if isinstance(x, (np.ndarray,)): return x.tolist()
+    if isinstance(x, (pd.Timestamp,)): return x.isoformat()
+    return x
+
+def make_adaptive_key(st, f_bands, k, array_type="infrasound"):
+    """
+    Create a stable hash representing:
+      - full array configuration (station names + coordinates)
+      - frequency bands (fmin/fmax and anything else in f_bands)
+      - number of clusters (k)
+      - array_type (signal_type)
+    """
+    # 1) Array geometry: station -> (lat, lon, elev)
+    stations = []
+    for tr in st:
+        sta = tr.stats.station
+        # robustly try to read coords if present
+        coords = {}
+        for key in ("latitude", "longitude", "elevation"):  # renamed from k -> key
+            v = getattr(tr.stats, key, None)
+            if v is None and hasattr(tr.stats, "sac"):
+                v = tr.stats.sac.get(key, None)
+            coords[key] = v
+        stations.append((sta, coords["latitude"], coords["longitude"], coords["elevation"]))
+
+    stations = sorted(set(stations), key=lambda x: x[0])
+
+    # 2) Frequency bands: sort columns + rows deterministically
+    if hasattr(f_bands, "copy"):
+        fb = f_bands.copy()
+        # common columns: fmin/fmax; keep all columns but stable ordering
+        fb = fb.sort_values(by=[c for c in ["fmin", "fmax"] if c in fb.columns]).reset_index(drop=True)
+        fb = fb[[c for c in sorted(fb.columns)]]
+        f_bands_payload = fb.to_dict(orient="list")
+    else:
+        f_bands_payload = f_bands  # fallback
+
+    payload = {
+        "array_type": array_type,
+        "k": int(k),
+        "stations": stations,
+        "f_bands": f_bands_payload,
+    }
+
+    s = json.dumps(payload, default=_jsonable, sort_keys=True)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+def load_subarrays_cache(cache_dir, key):
+    path = os.path.join(cache_dir, f"subarrays_{key}.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return None
+
+def save_subarrays_cache(cache_dir, key, subarrays_stnms):
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"subarrays_{key}.json")
+    with open(path, "w") as f:
+        json.dump(subarrays_stnms, f, indent=2)
+    return path
