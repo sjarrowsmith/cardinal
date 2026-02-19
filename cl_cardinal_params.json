@@ -1,0 +1,60 @@
+{
+  "Waveform": {
+    "type": "FDSN",
+    "source": {
+      "provider": "*",
+      "network": "*",
+      "array": "KSG*",
+      "channel": "BDF",
+      "datapath": "Data/Korea_Arrays/KSG/KSG.mseed",
+      "sitepath": "Data/Korea_Arrays/KSG/KSG.site",
+      "korea_arrays": true,
+      "remove_stations": ["KSG02","KSG04","KSG12","KSG14","KSG32","KSG34"],
+      "convert_units": null,
+      "amp_units":"Pressure [Pa]"
+    }
+  },
+
+  "Event": {
+    "use": false,
+    "time": null,
+    "lat": null,
+    "lon": null 
+  },
+
+  "Segmentor": {
+    "f_min": 0.02,
+    "f_max": 11,
+    "win_min": 30, 
+    "win_max": 335.4, 
+    "type": "third_octave"
+  }, 
+
+  "ArrayProcessing": {
+    "process": true,
+    "adaptive_array": true,
+    "signal_type": "infrasound",
+    "Plotting": {
+      "semblance_threshold": 0.5,
+      "clim_vtr": [0.2, 0.45],
+      "clim_baz": null,
+      "bandpass": [0.5, 5],
+      "normalize": true,
+      "spec_subplot": true,
+      "scal_subplot": false
+    }
+  },  
+
+  "Families" :{
+    "dist_threshold": 3,
+    "min_pixels": 25,
+    "sigma_t": 2,
+    "sigma_f": 2,
+    "sigma_b": 10,
+    "p_threshold": 0.1,
+    "family_grouping": "adaptive_kdtree_window"
+
+  },
+
+  "Plot": true
+}
