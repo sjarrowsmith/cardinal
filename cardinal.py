@@ -5105,7 +5105,7 @@ def get_infrasound_waveforms(
     site_out.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- conditional client ----
-    if korea_arrays:
+    if korea_arrays == True:
         enabled, user, password = korea_arrays
         if enabled:
             print('retrieving data from Korea with user = {user}')
