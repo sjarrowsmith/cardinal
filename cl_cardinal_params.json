@@ -2,16 +2,17 @@
   "Waveform": {
     "type": "FDSN",
     "source": {
-      "provider": "*",
-      "network": "*",
-      "array": "KSG*",
-      "channel": "BDF",
-      "datapath": "Data/Korea_Arrays/KSG/KSG.mseed",
-      "sitepath": "Data/Korea_Arrays/KSG/KSG.site",
-      "korea_arrays": true,
-      "remove_stations": ["KSG02","KSG04","KSG12","KSG14","KSG32","KSG34"],
+      "provider": "IRIS",
+      "network": "PY",
+      "array": "BPH*",
+      "channel": "BHZ",
+      "datapath": "Data/Virtual_Arrays/PFO/PFO.mseed",
+      "sitepath": "Data/Virtual_Arrays/PFO/PFO.site",
+      "korea_arrays": false,
+      "remove_response": true,
+      "remove_stations": null,
       "convert_units": null,
-      "amp_units":"Pressure [Pa]"
+      "amp_units":"Velocity [m/s]"
     }
   },
 
@@ -23,25 +24,25 @@
   },
 
   "Segmentor": {
-    "f_min": 0.02,
-    "f_max": 11,
-    "win_min": 30, 
-    "win_max": 335.4, 
+    "f_min": 0.1,
+    "f_max": 21,
+    "win_min": 5, 
+    "win_max": 100, 
     "type": "third_octave"
   }, 
 
   "ArrayProcessing": {
     "process": true,
-    "adaptive_array": true,
-    "signal_type": "infrasound",
+    "adaptive_array": false,
+    "signal_type": "seismic",
     "Plotting": {
       "semblance_threshold": 0.5,
-      "clim_vtr": [0.2, 0.45],
+      "clim_vtr": [0, 4],
       "clim_baz": null,
       "bandpass": [0.5, 5],
       "normalize": true,
-      "spec_subplot": true,
-      "scal_subplot": false
+      "spec_subplot": false,
+      "scal_subplot": true
     }
   },  
 
