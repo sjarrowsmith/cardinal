@@ -14,9 +14,12 @@ If you encounter conflicts during install, run these first:
 - conda config --add channels defaults
 - conda config --set channel_priority flexible
 
-## Run Cardinal (defaults to Jupyter Notebook)
+## Run Cardinal
 Navigate to Cardinal directory
+## Jupyter Notebook
 - jupyter nbclassic&
+## Command-Line Client
+- python run_cardinal.py --paramfile cl_cardinal_params.json --starttime 2015-01-03T13:47:00 --endtime 2015-01-03T13:49:00 # example earthquakes at PFO
 
 ## Examples
 The notebook provided, 1_Bolide_Infrasound.ipynb, outlines how to implement Cardinal's algorithm on example bolide events.
