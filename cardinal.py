@@ -550,7 +550,7 @@ def find_optimal_clusters(linked):
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6)):
+def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6), verbose=True):
     '''---------------------------------------------------------------------------------------------------------
     Calculates distance (in km) between each pair of elements in an array and plots dendrogram.
     Used to determine number of clusters for adaptive array.
@@ -616,8 +616,9 @@ def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6)):
         plt.grid(linewidth=grid_linewidth)
         plt.xlabel("Sensor"); plt.ylabel('Distance [km]')
         plt.title("Hierarchical Clustering Dendrogram")
-        print(f"Suggested number of clusters: {k}")
-        print(f"Distance to cut dendrogram: {cut_distance:.2f}")
+        if verbose == True:
+            print(f"Suggested number of clusters: {k}")
+            print(f"Distance to cut dendrogram: {cut_distance:.2f}")
         # Plot element pair distances first
         ax2 = fig.add_subplot(1,2,2, sharey=ax1)
         ax2.plot(x.astype(int), stn_dist_sort, 'o', color='k')
@@ -5067,7 +5068,7 @@ def write_array_site(inv, outpath: Path) -> None:
 
 from typing import Optional, Tuple
 
-def get_infrasound_waveforms(
+def get_waveforms(
     *,
     provider: str,
     network: str,
@@ -5080,6 +5081,7 @@ def get_infrasound_waveforms(
     site_out: Path,
     format: str = "MSEED",
     korea_arrays: Optional[Tuple[bool, str, str]] = None,
+    remove_response: bool = False, 
     verbose: bool = False,
 ):
     """
@@ -5104,11 +5106,14 @@ def get_infrasound_waveforms(
     mseed_out.parent.mkdir(parents=True, exist_ok=True)
     site_out.parent.mkdir(parents=True, exist_ok=True)
 
+    # Initialize inv
+    inv_response = None
+    inv = None
     # ---- conditional client ----
     if korea_arrays == True:
         enabled, user, password = korea_arrays
         if enabled:
-            print('retrieving data from Korea with user = {user}')
+            print(f"retrieving data from Korea with user = {user}")
             BASE = "http://niab3.geophy.smu.edu:8080"
             AUTH = (user, password)
 
@@ -5143,6 +5148,14 @@ def get_infrasound_waveforms(
             if verbose:
                 print(f"[OK] Wrote site file: {site_out}")
 
+            # If response removal requested, fetch response metadata too
+            if remove_response:
+                station_params_resp = dict(station_params)
+                station_params_resp["level"] = "response"
+                r = requests.get(station_url, params=station_params_resp, auth=AUTH, timeout=60)
+                r.raise_for_status()
+                inv_response = read_inventory(BytesIO(r.content))
+
             # MiniSEED
             r = requests.get(dataselect_url, params=data_params, auth=AUTH, timeout=60)
             if r.status_code == 204:
@@ -5165,6 +5178,17 @@ def get_infrasound_waveforms(
         )
 
         write_array_site(inv, site_out)
+
+        if remove_response:
+            inv_response = client.get_stations(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=t0,
+                endtime=t1,
+                level="response",
+            )
 
         if verbose:
             print(f"[OK] Wrote site file: {site_out}")
@@ -5190,6 +5214,18 @@ def get_infrasound_waveforms(
         st.merge(method=1, fill_value=None)
     except Exception:
         pass
+        
+    if remove_response:
+        if inv_response is None:
+            raise RuntimeError("remove_response=True but no response metadata (inv_response) available.")
+        st.detrend("demean")
+        st.detrend("linear")
+        st.remove_response(
+            inventory=inv_response,
+            output="VEL",
+            water_level=60,
+            pre_filt=(0.01, 0.02, 20.0, 25.0),
+        )
 
     if format.upper() == "MSEED":
         st.write(str(mseed_out), format="MSEED")
