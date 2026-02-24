@@ -61,6 +61,7 @@ def main():
         data_filepath = params['Waveform']['source']['datapath']
         array_coords_filepath = params['Waveform']['source']['sitepath']
         korea_arrays = params['Waveform']['source']['korea_arrays']
+        remove_response = params['Waveform']['source']['remove_response']
         remove_stations = params['Waveform']['source']['remove_stations']
         convert_units = params['Waveform']['source']['convert_units']
         amp_units = params['Waveform']['source']['amp_units']
@@ -114,7 +115,7 @@ def main():
         ### Option to read form FDSN ###
         if data_type == 'FDSN':
 
-            result = cardinal.get_infrasound_waveforms(
+            result = cardinal.get_waveforms(
                 provider=provider,
                 network=network,
                 station=array,
@@ -125,6 +126,7 @@ def main():
                 mseed_out=Path(data_filepath),
                 site_out=Path(array_coords_filepath),
                 korea_arrays=(korea_arrays, user, password),
+                remove_response=remove_response, # defaults to velocity (set integrate to True in plot_array_data() if you want displacement)
                 verbose=True,
             )
 
@@ -173,7 +175,9 @@ def main():
             ### Adaptive array and array processing ###
             t0 = time.perf_counter()
             cache_dir = "./.cardinal_cache"  # or argparse option
-            _, _, k = cardinal.clusters(st, plot=plot_plots)
+            if adaptive_array: verbose_clusters = True
+            else: verbose_clusters = False
+            _, _, k = cardinal.clusters(st, plot=plot_plots, verbose=verbose_clusters)
             if adaptive_array and k >= 3: # run adaptive array if true and 3 or more clusters
                 key = cardinal.make_adaptive_key(st, f_bands, k, array_type=signal_type)
                 subarrays_stnms = cardinal.load_subarrays_cache(cache_dir, key)
@@ -231,7 +235,7 @@ def main():
             # Plot results with families
             cardinal.plot_sliding_window_multifreq(
                 st, f_bands, T, B, V, S, spec_subplot=spec_subplot, scal_subplot=scal_subplot, clim_vtr=clim_vtr, clim_baz=clim_baz, bandpass=bandpass, normalize=normalize,
-                GT_baz=GT_baz, delay_times=delay_times, amp_units='Pressure [Pa]', pixels_in_families=pixels_in_families, ix=ix, title=title + "- Aggregator"
+                GT_baz=GT_baz, delay_times=delay_times, amp_units=amp_units, pixels_in_families=pixels_in_families, ix=ix, title=title + "- Aggregator"
             )
 
             if plot_plots:
