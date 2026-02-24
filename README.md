@@ -16,9 +16,9 @@ If you encounter conflicts during install, run these first:
 
 ## Run Cardinal
 Navigate to Cardinal directory
-## Jupyter Notebook
+#### Jupyter Notebook
 - jupyter nbclassic&
-## Command-Line Client
+#### Command-Line Client
 - python run_cardinal.py --paramfile cl_cardinal_params.json --starttime 2015-01-03T13:47:00 --endtime 2015-01-03T13:49:00 # example earthquakes at PFO
 
 ## Examples
