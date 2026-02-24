@@ -37,7 +37,7 @@
     "signal_type": "seismic",
     "Plotting": {
       "semblance_threshold": 0.5,
-      "clim_vtr": [0, 4],
+      "clim_vtr": [0, 7],
       "clim_baz": null,
       "bandpass": [0.5, 5],
       "normalize": true,
