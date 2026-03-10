@@ -252,34 +252,54 @@ def power_spectrum(tr, t_start=None, t_end=None, window='hann', nperseg=2**8, no
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def get_array_coords(st, ref_station, units='m'):
+def get_array_coords(st, ref_station=None, units='m', use_mean_reference=False):
     '''---------------------------------------------------------------------------------------------------------
-    Calculates array coordinates relative to a reference station
-    
+    Calculates array coordinates relative to a reference station or the array mean point
+
     Input:
         st: ObsPy Stream object
-        ref_station (str): name of reference station
+        ref_station (str or None): name of reference station (required if use_mean_reference=False)
         units (str): scale of array - options are "m" for meters or "km" for kilometers
-    
+        use_mean_reference (bool): if True, use the average (centroid) of all coordinates as reference
+
     Output:
         X (array): array coordinates in the specified scale ("m" or "km")
         stnm (list): list of element/station names
     ---------------------------------------------------------------------------------------------------------'''
+    if units not in ['m', 'km']:
+        raise ValueError("units must be 'm' or 'km'")
+
     X = np.zeros((len(st), 2))
     stnm = []
-    for i in range(0, len(st)):
-        E, N, _, _ = utm.from_latlon(st[i].stats.sac.stla, st[i].stats.sac.stlo)
-        X[i,0] = E; X[i,1] = N
-        stnm.append(st[i].stats.station)
-    #-----------------------------------------------------------------------------------------------------------------#
-    # Adjusting to the reference station, and converting to km:
-    ref_station_ix = np.where(np.array(stnm) == ref_station)[0][0]    # index of reference station
-    X[:,0] = (X[:,0] - X[ref_station_ix,0])
-    X[:,1] = (X[:,1] - X[ref_station_ix,1])
-    if units == 'km':
-        X = X/1000
 
-    return X, stnm 
+    for i in range(len(st)):
+        E, N, _, _ = utm.from_latlon(st[i].stats.sac.stla, st[i].stats.sac.stlo)
+        X[i, 0] = E
+        X[i, 1] = N
+        stnm.append(st[i].stats.station)
+
+    #-----------------------------------------------------------------------------------------------------------------#
+    # Adjust to chosen reference point
+    if use_mean_reference:
+        ref_E = np.mean(X[:, 0])
+        ref_N = np.mean(X[:, 1])
+    else:
+        if ref_station is None:
+            raise ValueError("ref_station must be provided when use_mean_reference=False")
+        ref_station_ix = np.where(np.array(stnm) == ref_station)[0]
+        if len(ref_station_ix) == 0:
+            raise ValueError(f"Reference station '{ref_station}' not found in stream")
+        ref_station_ix = ref_station_ix[0]
+        ref_E = X[ref_station_ix, 0]
+        ref_N = X[ref_station_ix, 1]
+
+    X[:, 0] = X[:, 0] - ref_E
+    X[:, 1] = X[:, 1] - ref_N
+
+    if units == 'km':
+        X = X / 1000.0
+
+    return X, stnm
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -1654,7 +1674,7 @@ def sliding_time_array_fk(st, element, tstart=None, tend=None, win_len=20, win_f
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def sliding_time_array_fk_multifreq(st, f_bands, client=None, t_start=None, t_end=None, signal_type='infrasound', sl_corr=[0.,0.],
-                                    use_geographic_coords=True, adaptive_array=False, memory_usage_threshold=90):
+                                    use_geographic_coords=True, adaptive_array=False, memory_usage_threshold=90, channel=None, step_size=None):
     '''---------------------------------------------------------------------------------------------------------
     Processes st with sliding window FK analysis in multiple frequency bands
 
@@ -1669,6 +1689,8 @@ def sliding_time_array_fk_multifreq(st, f_bands, client=None, t_start=None, t_en
         use_geographic_coordinates (boolean): whether to use lat/lon of array elements for processing
         adaptive_array (boolean): whether the input st is a list of optimally determined subarrays for each frequency band - output of adaptive_array
         memory_usage_threshold (int): specifies client to restart once memory allocation limit has been reached (defaults to 90%)
+        channel (str): optional ObsPy channel selector (e.g., 'BHZ') to restrict processing to one channel
+        step_size (bool/float): specifies resolution of slowness grid (defaults to 0.18 for infrasound and 0.01 for seismic unless otherwise specified)
 
     Output:
         T (array): times of array processing estimates (center of time windows) (s)
@@ -1679,11 +1701,31 @@ def sliding_time_array_fk_multifreq(st, f_bands, client=None, t_start=None, t_en
     Note: Client restarts automatically once 80% memory has been allocated
     IMPORTANT: Client needs to be specified outside of function to avoid unnecessary overhead
     ---------------------------------------------------------------------------------------------------------'''
+    # ---------------- Optional channel filtering ----------------
+    if channel is not None:
+        if not adaptive_array:
+            st = st.select(channel=channel)
+            if len(st) == 0:
+                raise ValueError(f"No traces found for channel='{channel}'")
+        else:
+            st_filtered = []
+            for i, st_tmp in enumerate(st):
+                st_sel = st_tmp.select(channel=channel)
+                if len(st_sel) == 0:
+                    raise ValueError(f"No traces found for channel='{channel}' in adaptive subarray index {i}")
+                st_filtered.append(st_sel)
+            st = st_filtered
+
     # ---------------- Slowness grid ----------------
+    if step_size is not None:
+        sl_s = step_size
+    else:
+        if signal_type == 'infrasound': sl_s = 0.18
+        elif signal_type == 'seismic': sl_s = 0.01
     if signal_type == 'infrasound':
-        sll_x=-3.6; slm_x=3.6; sll_y=-3.6; slm_y=3.6; sl_s=0.18
+        sll_x=-3.6; slm_x=3.6; sll_y=-3.6; slm_y=3.6; sl_s=sl_s
     elif signal_type == 'seismic':
-        sll_x=-0.5; slm_x=0.5; sll_y=-0.5; slm_y=0.5; sl_s=0.01
+        sll_x=-0.5; slm_x=0.5; sll_y=-0.5; slm_y=0.5; sl_s=sl_s
     else:
         raise ValueError("signal_type must be 'infrasound' or 'seismic'")
 
@@ -2052,24 +2094,33 @@ def make_families(T, B, V, S, f_bands, ref_time, segment_duration=3600,
         p_threshold (float): Percentile threshold for adaptive semblance threshold
         GT_baz (float/int): ground-truth back azimuth to be used with baz_dev to filter out pixels outside range
         baz_dev (float/int): deviation from ground-truth to filter pixels
-        exepcted_vel (float/int): like GT_baz but now using expected trace velocity
-        vel_dev (float/int): deviaton from expected vel - anything outside range will filter out
-        family_grouping (str): 'original', 'kdtree', or 'kdtree_window' to determine how to group families
-            - 'original': Original method using simple pairwise-distance calculations
-            - 'kdtree': KDTree method for faster distance calculations
-            - 'adaptive_kdtree_window': KDTree method with a windowed approach for more efficient distance calculations
-        segment_duration (int): Duration of each segment in seconds for the windowed approach (i.e. when family_grouping='kdtree_window')
-
+        expected_vel (float/int): like GT_baz but now using expected trace velocity
+        vel_dev (float/int): deviation from expected vel - anything outside range will filter out
+        family_grouping (str): 'original', 'kdtree', or 'adaptive_kdtree_window' to determine how to group families
+        segment_duration (int): Duration of each segment in seconds for the windowed approach
 
     Output:
         ix (array): Indices of frequencies, times
         pixels_in_families (array): NumPy array of all unique pixel ID's that are in families
-        families (list): each entry contains unique pixel ID's in that family
-    
-    Note: ix and pixels_in_families are provided for plotting purposes, such that:
-    x = np.zeros(S.shape)
-    x[ix[0][pixels_in_families],ix[1][pixels_in_families]] = 1   # Makes a mask where 1 means plot value
+        detections (array): family summary table
     ---------------------------------------------------------------------------------------------------------'''
+
+    def _angular_diff_deg(a, b):
+        # signed shortest angular difference in [-180, 180)
+        return (a - b + 180.0) % 360.0 - 180.0
+
+    def _circular_mean_std_deg(angles_deg):
+        if len(angles_deg) == 0:
+            return np.nan, np.nan
+        ang = np.deg2rad(np.mod(angles_deg, 360.0))
+        s = np.mean(np.sin(ang))
+        c = np.mean(np.cos(ang))
+        mean_deg = np.degrees(np.arctan2(s, c)) % 360.0
+        R = np.sqrt(s**2 + c**2)
+        R = np.clip(R, 1e-12, 1.0)
+        std_deg = np.degrees(np.sqrt(-2.0 * np.log(R)))
+        return mean_deg, std_deg
+
     if family_grouping == 'adaptive_kdtree_window':
         T_zeroed = T - np.min(T)
         total_duration = np.max(T_zeroed)
@@ -2091,7 +2142,8 @@ def make_families(T, B, V, S, f_bands, ref_time, segment_duration=3600,
                 cond = (S[:, time_mask] >= semblance_threshold)
 
             if GT_baz is not None:
-                cond &= (B[:, time_mask] > GT_baz - baz_dev) & (B[:, time_mask] < GT_baz + baz_dev)
+                bseg = B[:, time_mask]
+                cond &= (np.abs(_angular_diff_deg(bseg, GT_baz)) <= baz_dev)
             if expected_vel is not None:
                 cond &= (V[:, time_mask] > expected_vel - vel_dev) & (V[:, time_mask] < expected_vel + vel_dev)
 
@@ -2126,7 +2178,7 @@ def make_families(T, B, V, S, f_bands, ref_time, segment_duration=3600,
             cond = (S >= semblance_threshold)
 
         if GT_baz is not None:
-            cond &= (B > GT_baz - baz_dev) & (B < GT_baz + baz_dev)
+            cond &= (np.abs(_angular_diff_deg(B, GT_baz)) <= baz_dev)
         if expected_vel is not None:
             cond &= (V > expected_vel - vel_dev) & (V < expected_vel + vel_dev)
 
@@ -2153,7 +2205,7 @@ def make_families(T, B, V, S, f_bands, ref_time, segment_duration=3600,
             cond = (S >= semblance_threshold)
 
         if GT_baz is not None:
-            cond &= (B > GT_baz - baz_dev) & (B < GT_baz + baz_dev)
+            cond &= (np.abs(_angular_diff_deg(B, GT_baz)) <= baz_dev)
         if expected_vel is not None:
             cond &= (V > expected_vel - vel_dev) & (V < expected_vel + vel_dev)
 
@@ -2187,18 +2239,28 @@ def make_families(T, B, V, S, f_bands, ref_time, segment_duration=3600,
     families = [list(c) for c in components if len(c) > min_pixels]
     pixels_in_families = np.concatenate(families) if families else np.array([], dtype=int)
 
-    detections = np.array([
-        [ref_time + np.min(T_ix[f]) / 86400. for f in families],
-        [ref_time + np.max(T_ix[f]) / 86400. for f in families],
-        [np.min(F_ix[f]) for f in families],
-        [np.max(F_ix[f]) for f in families],
-        [np.mean(B_ix[f]) for f in families],
-        [np.std(B_ix[f]) for f in families],
-        [np.mean(V_ix[f]) for f in families],
-        [np.std(V_ix[f]) for f in families],
-        [np.max(S_ix[f]) for f in families],
-        [len(f) for f in families]
-    ]) if families else np.empty((10, 0))
+    if families:
+        baz_mean = []
+        baz_std = []
+        for f in families:
+            m, s = _circular_mean_std_deg(B_ix[f])
+            baz_mean.append(m)
+            baz_std.append(s)
+
+        detections = np.array([
+            [ref_time + np.min(T_ix[f]) / 86400. for f in families],
+            [ref_time + np.max(T_ix[f]) / 86400. for f in families],
+            [np.min(F_ix[f]) for f in families],
+            [np.max(F_ix[f]) for f in families],
+            baz_mean,
+            baz_std,
+            [np.mean(V_ix[f]) for f in families],
+            [np.std(V_ix[f]) for f in families],
+            [np.max(S_ix[f]) for f in families],
+            [len(f) for f in families]
+        ])
+    else:
+        detections = np.empty((10, 0))
 
     return (ix_f, ix_t), pixels_in_families, detections
 
@@ -2477,10 +2539,8 @@ def plot_array_data(data_filepath, array_coords_filepath=None, event_time=None, 
     # Computing delay times, GT back azimuth and distance - FOR INFRASOUND ONLY
     elif (parameter_table == None) and (event_time is not None):
         # Extracting year, month, day, hour, minute, second from source time input
-        source_time = event_time.replace('T', ' ')
-        year = int(source_time.split()[0].split('-')[0]); month = int(source_time.split()[0].split('-')[1]); day = int(source_time.split()[0].split('-')[2])
-        hour = int(source_time.split()[1].split(':')[0]); minute = int(source_time.split()[1].split(':')[1]); second = int(source_time.split()[1].split(':')[2])
-        source_time = datetime(year,month,day,hour,minute,second)
+        event_dt = UTCDateTime(event_time).datetime
+        source_time = event_dt.replace(tzinfo=None)
         #-----------------------------------------------------------------------------------------------------------------------#
         # Computing distance, back azimuth, delay times (trop, strat, therm), and eta's in UTC
         _, baz, distance = g.inv(source_lon, source_lat, st[0].stats.sac.stlo, st[0].stats.sac.stla); distance /= 1000
@@ -3042,7 +3102,10 @@ def plot_source_receiver_map(ev_lat, ev_lon, arr_lat, arr_lon, extent=[122.5, 13
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m', fname_plot=None):
+def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m',
+                      x_label_fontsize=12, y_label_fontsize=12,
+                      x_ticklabel_size=10, y_ticklabel_size=10,
+                      title=None, fname_plot=None):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Plots the array coordinates
 
@@ -3051,34 +3114,50 @@ def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m',
         stnm (list): names of array elements
         figsize (tuple): specifies size of figure
         units (str): specifies scale of plot - options are "m" and "km"
+        x_label_fontsize (int/float): fontsize for x-axis label
+        y_label_fontsize (int/float): fontsize for y-axis label
+        x_ticklabel_size (int/float): fontsize for x-axis tick labels
+        y_ticklabel_size (int/float): fontsize for y-axis tick labels
     ----------------------------------------------------------------------------------------------------------------------------------'''
-    fig = plt.figure(figsize=figsize)
-    plt.plot(X[:,0], X[:,1], '.')
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(X[:,0], X[:,1], '.')
     for i in range(0, len(stnm)):
-        plt.text(X[i,0], X[i,1], stnm[i])
-    plt.grid(lw=0.25)
+        ax.text(X[i,0], X[i,1], stnm[i])
+
+    ax.grid(lw=0.25)
+
     if units == 'km':
-        plt.xlabel('X [km]')
-        plt.ylabel('Y [km]')
+        ax.set_xlabel('X [km]', fontsize=x_label_fontsize)
+        ax.set_ylabel('Y [km]', fontsize=y_label_fontsize)
     elif units == 'm':
-        plt.xlabel('X [m]')
-        plt.ylabel('Y [m]')
+        ax.set_xlabel('X [m]', fontsize=x_label_fontsize)
+        ax.set_ylabel('Y [m]', fontsize=y_label_fontsize)
     else:
         print('Unrecognized units (Options are "km" and "m")')
+
+    ax.tick_params(axis='x', labelsize=x_ticklabel_size)
+    ax.tick_params(axis='y', labelsize=y_ticklabel_size)
+
     if x_lim is not None:
-        plt.xlim(x_lim)
+        ax.set_xlim(x_lim)
     if y_lim is not None:
-        plt.ylim(y_lim)
+        ax.set_ylim(y_lim)
+    if title is not None:
+        ax.set_title(title)
+
     #-----------------------------------------------------------------------------------------------------------------#
     if fname_plot is not None:
         fig.savefig(fname_plot, dpi=300)
+
         
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
 def plotFK(st, startTime, endTime, frqlow, frqhigh,
            sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18,
            plot=True, normalize=True, sl_corr=[0.,0.], show_peak=False,
-           cmap='viridis', figsize=(12,9), fname_plot=None):
+           cmap='viridis', figsize=(9,6), fname_plot=None,
+           x_label_fontsize=12, y_label_fontsize=12,
+           x_ticklabel_size=10, y_ticklabel_size=10):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Computes and displays an FK plot for an ObsPy Stream object
 
@@ -3097,6 +3176,10 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
         cmap (str): colormap to be used for plotting
         figsize (tuple): figure size
         fname_plot (str): filepath to save figure
+        x_label_fontsize (int/float): fontsize of x-axis label
+        y_label_fontsize (int/float): fontsize of y-axis label
+        x_ticklabel_size (int/float): fontsize of x-axis tick labels
+        y_ticklabel_size (int/float): fontsize of y-axis tick labels
 
     Output:
         relpow_map (array): relative power map of FK
@@ -3207,17 +3290,21 @@ def plotFK(st, startTime, endTime, frqlow, frqhigh,
         plt.plot(0, 0, 'w+')
         if show_peak:
             plt.plot(-slow_x, -slow_y, 'r*')
-        plt.xlabel('Slowness x [s/km]')
-        plt.ylabel('Slowness y [s/km]')
+
+        plt.xlabel('Slowness x [s/km]', fontsize=x_label_fontsize)
+        plt.ylabel('Slowness y [s/km]', fontsize=y_label_fontsize)
+
+        ax = plt.gca()
+        ax.tick_params(axis='x', labelsize=x_ticklabel_size)
+        ax.tick_params(axis='y', labelsize=y_ticklabel_size)
+
         plt.title('Peak semblance at ' + str(round(baz % 360., 2)) + ' [deg.] ' + str(round(1/slow, 2)) + ' [km/s]')
         plt.tight_layout()
         if fname_plot: fig.savefig(fname_plot, dpi=300)
 
-
     # only flipping left-right, when using imshow to plot the matrix is takes points top to bottom
     # points are now starting at top-left in row major
     return np.fliplr(relpow_map.transpose()), baz % 360, 1. / slow
-
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
@@ -3307,7 +3394,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
                                 ############### Time-series #####################################################
                                 normalize=False, beamform_data=False, bandpass=[0.5,5], taper='cosine', 
                                 max_percentage=0.05, max_length=60, amp_units='Amplitude', legend_loc='upper right', 
-                                t_lim=None, amp_lim=None, delay_times=None, element=None, return_beam=False,
+                                t_lim=None, amp_lim=None, delay_times=None, element=None, channel=None, return_beam=False,
 
                                 ############### Aggregator ######################################################
                                 ix=None, pixels_in_families=None, families=None, families_table=None, family_idx=None,
@@ -3357,6 +3444,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         amp_lim (list): range in amplitude for visualization in time-series plot (defaults to [data.min(), data.max()])
         delay_times (array or list): tropospheric, stratospheric, and thermospheric arrival times (in seconds relative to stream start time)
         element (str): name of the element to plot the time-series data for (defaults to first element if not provided)
+        channel (str): specify channel used for processing
         return_beam (boolean): if True, returns modified ObsPy stream where the last trace contains the beamformed data
         ix (array): Indices of frequencies, times (output from make_families)
         pixels_in_families (array): NumPy array of all unique pixel ID's that are in families (output from make_families)
@@ -3422,6 +3510,12 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
     ax_dict = {}  # Keep track of axes by type
     freq_share_ax = None  # Will be used to synchronize y-axes (for non-waveform plots)
     # --------------------------- WAVEFORM SUBPLOT ---------------------------
+    # Optionally restrict plotting/beamforming/PSD to one channel
+    if channel is not None:
+        st = st.select(channel=channel)
+        if len(st) == 0:
+            raise ValueError(f"No traces found for channel='{channel}'")
+
     if waveform_subplot:
         ax1 = fig.add_subplot(n_subplots, 1, subplot_idx)
         ax_dict['waveform'] = ax1
@@ -3712,7 +3806,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
         # -------------------------
         if clim_baz is not None:
             cbar.set_label(
-                "Azimuth\nDeviation [°]" if GT_baz is not None else "Azimuth [°]"
+                "Back Azimuth\nDeviation [°]" if GT_baz is not None else "Back Azimuth\n[°]"
             )
         else:
             # -------------------------
@@ -3737,7 +3831,7 @@ def plot_sliding_window_multifreq(st, f_bands, T, B, V, S,
             cbar.set_ticklabels(labels)
             # Label depends ONLY on GT_baz
             cbar.set_label(
-                "Azimuth\nDeviation [°]" if GT_baz is not None else "Azimuth [°]"
+                "Back Azimuth\nDeviation [°]" if GT_baz is not None else "Back Azimuth\n[°]"
             )
         # housekeeping
         cbar.ax.yaxis.get_offset_text().set_visible(False)
@@ -4419,11 +4513,10 @@ def plot_zero_crossings(st, element=None, bandpass=[0.5,5], resample=100, taper=
         fig.savefig(fname_plot)
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-
-def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_percentage=0.05, max_length=60, delay_times=None, data_envelope=False, trace_spacing=2.25, t_lim=None, 
+def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], station_order=None, taper='cosine', max_percentage=0.05, max_length=60, delay_times=None, data_envelope=False, trace_spacing=2.25, t_lim=None, 
                            plot_UTC=False, UTC_time_interval=None, families=None, families_table=None, family_idx=None, trim_family_window=None, v_lim=None, return_xcorr_params=False, 
                            ax1_xlabel_fontsize=10, ax1_ylabel_fontsize=10, ax1_title_fontsize=10, ax1_ticklabel_size=10, ax2_xlabel_fontsize=10, colorbar_fontsize=10, ax2_ticklabel_size=10,
-                           ax2_title_fontsize=10, title1=None, title2=None, fname_plot=None, figsize=(18,6)):
+                           ax2_title_fontsize=10, title1=None, title2=None, fname_plot=None, figsize=(15,5)):
     '''----------------------------------------------------------------------------------------------------------------------------------
     Computes spatial cross-correlation matrix of signal and spatiotemporal cross-correlation (automatically normalizes trace data)
 
@@ -4431,6 +4524,7 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
         st: ObsPy stream object
         f_bands (Pandas DataFrame): contains frequency bands and time windows constructed using the Segmentor
         bandpass (list): frequency range to use to bandpass time-series data prior to period measurements (defaults to [0.5,5])
+        station_order (list[str] or None): optional station-name order; listed stations are plotted first in that order, any omitted stations are appended
         taper (str): type of taper to use - defaults to "cosine"
         max_percentage (float/int): percentage to use for taper
         max_length (float/int): length to use for taper
@@ -4465,9 +4559,31 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
     # Plot normalized waveforms
     fig = plt.figure(figsize=figsize)
     ax1 = fig.add_subplot(1,2,1)
+
+    # Optional station ordering
+    st_plot = st.copy()
+    if station_order is not None:
+        station_names = [tr.stats.station for tr in st_plot]
+
+        if len(station_names) != len(set(station_names)):
+            raise ValueError("station_order requires unique station names in stream.")
+
+        unknown = [s for s in station_order if s not in station_names]
+        if unknown:
+            raise ValueError(f"station_order contains station(s) not in stream: {unknown}")
+
+        repeated = [s for s in set(station_order) if station_order.count(s) > 1]
+        if repeated:
+            raise ValueError(f"station_order contains duplicate station(s): {repeated}")
+
+        remaining = [s for s in station_names if s not in station_order]
+        final_order = list(station_order) + remaining
+        order_idx = [station_names.index(s) for s in final_order]
+        st_plot = st_plot.__class__([st_plot[i] for i in order_idx])
+
     # Filter
     if bandpass is not None:
-        st_taper = st.copy()
+        st_taper = st_plot.copy()
         st_taper.taper(type=taper, max_percentage=max_percentage, max_length=max_length)
         st_filt = st_taper.copy()
         try:
@@ -4475,36 +4591,46 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
         except:
             st_filt = st_taper.copy().split()
             st_filt.filter(type='bandpass', freqmin=min(bandpass), freqmax=max(bandpass))
-            st_filt = st_filt.merge() 
+            st_filt = st_filt.merge()
+    else:
+        st_filt = st_plot.copy()
+
     # Time and data vectors
     t = np.arange(0, st_filt[0].stats.npts*st_filt[0].stats.delta, st_filt[0].stats.delta)
     data_array_tmp = []
     for tr in st_filt:
-        tr_data_tmp = tr.data / np.max(np.abs(tr.data)) # normalize by trace
+        tr_data_tmp = tr.data / np.max(np.abs(tr.data))  # normalize by trace
         data_array_tmp.append(tr_data_tmp)
-    data_array_tmp = np.array(data_array_tmp); data_array = []
+    data_array_tmp = np.array(data_array_tmp)
+    data_array = []
     for tr_idx in range(data_array_tmp.shape[0]):
-        t, tr_idx_data = fix_lengths(t, data_array_tmp[tr_idx,:]) # will be using this time vector
+        t, tr_idx_data = fix_lengths(t, data_array_tmp[tr_idx,:])  # will be using this time vector
         data_array.append(tr_idx_data)
     data_array = np.array(data_array)
+
     # Plot array data
-    k = 0; ticks = []; labels = []
+    k = 0
+    ticks = []
+    labels = []
     for data_idx, tr in zip(range(data_array.shape[0]), st_filt):
-        ax1.plot(t, data_array[data_idx,:]+k, color='k')
+        ax1.plot(t, data_array[data_idx,:] + k, color='k')
         if data_envelope == True:
-            ax1.plot(t, np.abs(signal.hilbert(data_array[data_idx,:]))+k, color='blue', lw=3) # plot envelope if specified by user
-        ticks.append(k); labels.append(tr.stats.station)
+            ax1.plot(t, np.abs(signal.hilbert(data_array[data_idx,:])) + k, color='blue', lw=3)  # plot envelope if specified by user
+        ticks.append(k)
+        labels.append(tr.stats.station)
         k += trace_spacing
-    plt.yticks(ticks,labels)
-    global_start = min(tr.stats.starttime for tr in st)
-    global_end = max(tr.stats.endtime for tr in st)
+    ax1.set_yticks(ticks)
+    ax1.set_yticklabels(labels)
+
+    global_start = min(tr.stats.starttime for tr in st_plot)
+    global_end = max(tr.stats.endtime for tr in st_plot)
     if (plot_UTC == True) and (t_lim == None):
         # Plot UTC - round down to the nearest minute_interval for start
         if UTC_time_interval is not None:
             minute_interval = UTC_time_interval
         else:
             if global_end-global_start <= 3600*2:
-                minute_interval = 15 # less than 2 hours make it 15 minute intervals
+                minute_interval = 15  # less than 2 hours make it 15 minute intervals
             else:
                 # round to the nearest 15 minutes and partition data stream into 6 segements if stream is longer than 2 hours
                 n = global_end-global_start
@@ -4516,33 +4642,60 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
             rounded_start_tick += (minute_interval*60)
         x_tick_positions = np.arange(rounded_start_tick - global_start, global_end - global_start, minute_interval*60)
         x_tick_labels = [(global_start + t).strftime('%H:%M:%S') for t in x_tick_positions]
-        ax1.set_xticks(x_tick_positions); ax1.set_xticklabels(x_tick_labels)
-        ax1.set_xlim([0,(global_end-global_start)]); ax1.set_xlabel(global_start.strftime('%Y-%m-%d')+' Time [UTC]', fontsize=ax1_xlabel_fontsize)
+        ax1.set_xticks(x_tick_positions)
+        ax1.set_xticklabels(x_tick_labels)
+        ax1.set_xlim([0, (global_end-global_start)])
+        ax1.set_xlabel(global_start.strftime('%Y-%m-%d')+' Time [UTC]', fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == False) and (t_lim is not None):
         ax1.set_xlim(t_lim)
         ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0], fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == False) and (t_lim == None):
-        ax1.set_xlim([t[0],t[-1]])
+        ax1.set_xlim([t[0], t[-1]])
         ax1.set_xlabel('Time [s] after ' + str(global_start).split('.')[0], fontsize=ax1_xlabel_fontsize)
     elif (plot_UTC == True) and (t_lim is not None):
         raise Exception("Can't have t_lim and plot_UTC set to True, since t_lim is relative.")
-    plt.ylabel('Trace', fontsize=ax1_ylabel_fontsize)
+
+    ax1.set_ylabel('Trace', fontsize=ax1_ylabel_fontsize)
     if (title1 is not None) and (bandpass is not None):
-        ax1.set_title(title1+ " - Normalized Waveforms\nBandpass: " + str(bandpass), fontsize=ax1_title_fontsize)
+        ax1.set_title(title1 + " - Normalized Waveforms\nBandpass: " + str(bandpass), fontsize=ax1_title_fontsize)
     elif (title1 is not None) and (bandpass == None):
         ax1.set_title(title1, fontsize=ax1_title_fontsize)
     elif (title1 == None) and (bandpass is not None):
         ax1.set_title("Normalized Waveforms\nBandpass: " + str(bandpass), fontsize=ax1_title_fontsize)
     ax1.tick_params(axis='both', labelsize=ax1_ticklabel_size)
+
     #-----------------------------------------------------------------------------------------------------------------------#
-    # Compute spatiotemporal cross-correlation and map to waveforms
-    val = np.mean([max(bandpass),min(bandpass)])
-    f_val = find_closest(val, f_bands['fcenter'].values)
-    f_idx = np.where((f_bands['fcenter'].values == f_val))[0][0]
-    win_len = f_bands['win'].values[f_idx]; step = f_bands['step'].values[f_idx] # need to find win and step values from f_bands using bandpass
+    # Choose win_len/step from f_bands based on average bandpass frequency
+    fcenters = f_bands['fcenter'].values
+    fmin, fmax = np.min(fcenters), np.max(fcenters)
+    if bandpass is None:
+        f_idx = np.argmax(fcenters)
+        print(
+            f"bandpass is None. Using win_len/step at highest f_bands frequency "
+            f"({fcenters[f_idx]:.3f} Hz)."
+        )
+    else:
+        val = np.mean([max(bandpass), min(bandpass)])
+        if (val < fmin) or (val > fmax):
+            # Fallback: use parameters at highest available fcenter
+            f_idx = np.argmax(fcenters)
+            print(
+                f"Average bandpass frequency ({val:.3f} Hz) is not within f_bands "
+                f"range [{fmin:.3f}, {fmax:.3f}] Hz. "
+                f"Using win_len/step at highest f_bands frequency ({fcenters[f_idx]:.3f} Hz)."
+            )
+        else:
+            f_val = find_closest(val, fcenters)
+            f_idx = np.where(fcenters == f_val)[0][0]
+
+    win_len = f_bands['win'].values[f_idx]
+    step = f_bands['step'].values[f_idx]
+
     # Step through time-series recordings
-    starttime = 0; endtime = st[0].stats.endtime - st[0].stats.starttime
-    xcorr_coefs = []; times = []
+    starttime = 0
+    endtime = st_plot[0].stats.endtime - st_plot[0].stats.starttime
+    xcorr_coefs = []
+    times = []
     for win_start in np.arange(0, endtime-starttime, step):
         if win_start + win_len > endtime:
             break
@@ -4557,97 +4710,123 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], taper='cosine', max_pe
                     continue
                 _, xcorr_vals = norm_xcorr(t_win, tr_data_idx, data_array_win[i,:])
                 tr_xcorr_coef.append(xcorr_vals.max())
-            xcorr_coef.append(np.mean(tr_xcorr_coef)) # take the average maximum correlation coefficient for each trace
-        xcorr_coef = np.array(xcorr_coef) # values are average max corr coef, rows are stations, column is time sample
-        xcorr_coefs.append(xcorr_coef); times.append(win_start + (win_len/2))
-    xcorr_coefs = np.array(xcorr_coefs).T; times = np.array(times).reshape(1,len(times))
+            xcorr_coef.append(np.mean(tr_xcorr_coef))  # take the average maximum correlation coefficient for each trace
+        xcorr_coef = np.array(xcorr_coef)  # values are average max corr coef, rows are stations, column is time sample
+        xcorr_coefs.append(xcorr_coef)
+        times.append(win_start + (win_len/2))
+    xcorr_coefs = np.array(xcorr_coefs).T
+    times = np.array(times).reshape(1, len(times))
+
     # Map times to stream times
-    new_times = np.zeros((1,times.shape[1]))
+    new_times = np.zeros((1, times.shape[1]))
     for times_idx in range(times.shape[1]):
-        t_idx = map_time_to_sample(times[0,times_idx], t)
-        new_times[0,times_idx] = t[t_idx]
+        t_idx = map_time_to_sample(times[0, times_idx], t)
+        new_times[0, times_idx] = t[t_idx]
+
     if v_lim is not None:
-        vmin = v_lim[0]; vmax = v_lim[1]
+        vmin = v_lim[0]
+        vmax = v_lim[1]
     else:
-        vmin = 0; vmax=1
+        vmin = 0
+        vmax = 1
+
+    colors = plt.cm.hot_r(np.linspace(0, 1, 256))
+    cmap = LinearSegmentedColormap.from_list('custom_hot_r', colors)
+    norm = Normalize(vmin=vmin, vmax=vmax)
+
     k = 0
     for tr_idx in range(xcorr_coefs.shape[0]):
         # Interpolate xcorr values to match waveform's time samples
         xcorr_coefs_interp = np.interp(t, new_times[0,:], xcorr_coefs[tr_idx,:])
+
         # Create segments of the waveform for coloring
-        points = np.array([t, data_array[tr_idx,:]+k]).T.reshape(-1,1,2)
+        points = np.array([t, data_array[tr_idx,:] + k]).T.reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        # Use colormap to map cross-correlation values to colors
-        colors = plt.cm.hot_r(np.linspace(0,1,256))
-        cmap = LinearSegmentedColormap.from_list('custom_hot_r', colors)
-        norm = Normalize(vmin=vmin, vmax=vmax)
+
         # Create LineCollection for waveform
         lc = LineCollection(segments, cmap=cmap, norm=norm)
         lc.set_array(xcorr_coefs_interp)
         lc.set_linewidth(2)
+
         # Plot waveform
         ax1.add_collection(lc)
         ax1.autoscale(enable=True, axis='y')
         k += trace_spacing
+
     if delay_times is not None:
-        plt.axvline(x=delay_times[0], lw=1, ls='--', color='red')
-        plt.axvline(x=delay_times[1], lw=1, ls='--', color='green')
-        plt.axvline(x=delay_times[2], lw=1, ls='--', color='blue')
+        ax1.axvline(x=delay_times[0], lw=1, ls='--', color='red')
+        ax1.axvline(x=delay_times[1], lw=1, ls='--', color='green')
+        ax1.axvline(x=delay_times[2], lw=1, ls='--', color='blue')
+
     #-----------------------------------------------------------------------------------------------------------------------#
     # Cross-correlation matrix using families detection
     if (families is not None) and (families_table == None):
-        families_table = df_families(st[0].stats.starttime.matplotlib_date, families)
+        families_table = df_families(st_plot[0].stats.starttime.matplotlib_date, families)
     elif (families == None) and (families_table is not None):
         pass
     elif (families == None) and (families_table == None):
         raise Exception('If generating cross-correlatin matrix, families or families_table must be specified.')
+
     # Choose family (either user defined or defaults to family with max semb)
     if family_idx is not None:
         fam_start = families_table['start_time'][family_idx]
         fam_end = families_table['end_time'][family_idx]
     else:
-        family_idx = np.where((families_table['max_semb'] == families_table['max_semb'].max()))[0][0] # choose family with max semblance if not specified by user
+        family_idx = np.where((families_table['max_semb'] == families_table['max_semb'].max()))[0][0]  # choose family with max semblance if not specified by user
         fam_start = families_table['start_time'][family_idx]
         fam_end = families_table['end_time'][family_idx]
+
     if trim_family_window is not None:
         sig_start = fam_start + trim_family_window[0]
         sig_end = fam_start + trim_family_window[1]
     else:
         sig_start = fam_start.copy()
         sig_end = fam_end.copy()
+
     # Shade in region of array data that is being used for cross-correlation matrix
     y_fill = np.linspace(data_array.min()-0.25, data_array.max()+k-trace_spacing+0.25, 1000)
     ax1.fill_betweenx(y_fill, x1=sig_start, x2=sig_end, alpha=0.25, color='grey')
     ax1.set_ylim(data_array.min()-0.25, data_array.max()+k-trace_spacing+0.25)
+
     # Extract data and compute cross-correlation
     if data_envelope == True:
         for data_idx in range(data_array.shape[0]):
-            data_array[data_idx,:] = np.abs(signal.hilbert(data_array[data_idx,:])) # cross-correlate envelope if specified by user
+            data_array[data_idx,:] = np.abs(signal.hilbert(data_array[data_idx,:]))  # cross-correlate envelope if specified by user
     t_matrix, data_matrix = data_time_window(t, data_array, t_start=sig_start, t_end=sig_end)
     xcorr_coef_matrix, xcorr_lag_times, ref_signal = xcorr_matrix(t_matrix, data_matrix)
+
     #-----------------------------------------------------------------------------------------------------------------------#
     # Plot correlation matrix
     ax2 = fig.add_subplot(1,2,2)
-    windows = []
-    for tr in st:
-        windows.append(tr.stats.station)
-    ticks = np.arange(0,len(st),1)
-    plt.pcolormesh(xcorr_coef_matrix, vmin=vmin, vmax=vmax, cmap=cmap)
-    colorbar = plt.colorbar(ax=ax2)
+    windows = [tr.stats.station for tr in st_plot]
+    n = len(windows)
+
+    pcm = ax2.pcolormesh(xcorr_coef_matrix, vmin=vmin, vmax=vmax, cmap=cmap, shading='auto')
+    colorbar = fig.colorbar(pcm, ax=ax2)
     colorbar.set_label('Normalized Correlation Coefficient', fontsize=colorbar_fontsize)
-    plt.xticks(ticks, windows, ha='left'); plt.yticks(ticks, windows, va='baseline')
-    plt.xlabel('Trace', fontsize=ax2_xlabel_fontsize)
+
+    # Center labels in each square
+    tick_pos = np.arange(n) + 0.5
+    ax2.set_xticks(tick_pos)
+    ax2.set_yticks(tick_pos)
+    ax2.set_xticklabels(windows)
+    ax2.set_yticklabels(windows)
+    ax2.set_xlim(0, n)
+    ax2.set_ylim(0, n)
+    ax2.set_xlabel('Trace', fontsize=ax2_xlabel_fontsize)
+    ax2.tick_params(axis='both', labelsize=ax2_ticklabel_size)
+
     if title2 == None:
         if data_envelope == True:
-            plt.title('Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
+            ax2.set_title('Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
         else:
-            plt.title('Correlation Matrix', fontsize=ax2_title_fontsize)
+            ax2.set_title('Correlation Matrix', fontsize=ax2_title_fontsize)
     else:
         if data_envelope == True:
-            plt.title(title2 + ' Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
+            ax2.set_title(title2 + ' Envelope Correlation Matrix', fontsize=ax2_title_fontsize)
         else:
-            plt.title(title2 + ' Correlation Matrix', fontsize=ax2_title_fontsize)
-    ax2.tick_params(axis='both', labelsize=ax2_ticklabel_size)
+            ax2.set_title(title2 + ' Correlation Matrix', fontsize=ax2_title_fontsize)
+
     # Save figure
     plt.tight_layout()
     if fname_plot is not None:
@@ -5024,7 +5203,9 @@ def parse_args():
 
     return params
 
-_ISO_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+_ISO_TIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z)?$"
+)
 
 def _validate_iso_time(value: str) -> None:
     if not _ISO_TIME_RE.match(value):
@@ -5406,3 +5587,89 @@ def save_subarrays_cache(cache_dir, key, subarrays_stnms):
     with open(path, "w") as f:
         json.dump(subarrays_stnms, f, indent=2)
     return path
+
+# For batch processing in CLI
+
+def format_timestamp(value):
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+
+
+def make_event_slug(row, idx):
+    if "EVID" in row and pd.notna(row["EVID"]):
+        raw = f"evid_{row['EVID']}"
+    elif "time" in row and pd.notna(row["time"]):
+        raw = format_timestamp(row["time"])
+    else:
+        raw = f"event_{idx:05d}"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(raw))
+
+
+def load_catalog_jobs(catalog_cfg, use_event):
+    catalog_path = Path(catalog_cfg["path"]).expanduser()
+    if not catalog_path.exists():
+        raise FileNotFoundError(f"Catalog file not found: {catalog_path}")
+
+    start_col = catalog_cfg.get("start_col", "window_start_utc")
+    end_col = catalog_cfg.get("end_col", "window_end_utc")
+    id_col = catalog_cfg.get("id_col", "EVID")
+    event_time_col = catalog_cfg.get("event_time_col", "time")
+    lat_col = catalog_cfg.get("lat_col", "LAT")
+    lon_col = catalog_cfg.get("lon_col", "LON")
+
+    cat = pd.read_excel(catalog_path)
+
+    skip_events = int(catalog_cfg.get("skip_events", 0))
+    if skip_events > 0:
+        cat = cat.iloc[skip_events:]
+
+    max_events = catalog_cfg.get("max_events")
+    if max_events is not None:
+        cat = cat.head(int(max_events))
+
+
+    required = [start_col, end_col]
+    if use_event:
+        required.extend([event_time_col, lat_col, lon_col])
+
+    missing_cols = [col for col in required if col not in cat.columns]
+    if missing_cols:
+        raise KeyError(f"Missing required catalog columns: {missing_cols}")
+
+    jobs = []
+    skipped = 0
+
+    for idx, row in cat.iterrows():
+        if pd.isna(row[start_col]) or pd.isna(row[end_col]):
+            skipped += 1
+            continue
+
+        if use_event and (pd.isna(row[event_time_col]) or pd.isna(row[lat_col]) or pd.isna(row[lon_col])):
+            skipped += 1
+            continue
+
+        event_slug = make_event_slug(row, idx)
+        event_id = row[id_col] if id_col in row and pd.notna(row[id_col]) else event_slug
+
+        job = {
+            "row_index": idx,
+            "event_slug": event_slug,
+            "event_id": event_id,
+            "starttime": UTCDateTime(format_timestamp(row[start_col])),
+            "endtime": UTCDateTime(format_timestamp(row[end_col])),
+        }
+
+        if use_event:
+            job["event_time"] = format_timestamp(row[event_time_col])
+            job["source_lat"] = float(row[lat_col])
+            job["source_lon"] = float(row[lon_col])
+
+        jobs.append(job)
+
+    print(f"Loaded {len(jobs)} catalog jobs from {catalog_path}")
+    if skipped:
+        print(f"Skipped {skipped} rows with missing required values")
+
+    return jobs
