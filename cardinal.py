@@ -589,7 +589,7 @@ def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6), verbose=True):
 
     Note: Only use to determine suggested number of clusters if > 4 sensors in array
     ---------------------------------------------------------------------------------------------------------'''
-    # X = get_geometry(st)
+    # Compute relative array coordinates 
     X, stnm = get_array_coords(st, st[0].stats.station, units='km')
     if X.shape[1] == 3:
         X = X[:,:-1]
@@ -619,12 +619,15 @@ def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6), verbose=True):
     pairs = np.array_split(pairs, M)
     pairs = np.flipud(pairs)
     #--------------------------------------------------------------------------------#
+    linked = linkage(pdist(X), method='ward')
+    k, cut_distance = find_optimal_clusters(linked)
+    if verbose == True:
+        print(f"Suggested number of clusters: {k}")
+        print(f"Distance to cut dendrogram: {cut_distance:.2f}")
     if plot:
         fig = plt.figure(figsize=figsize)
         # Plot dendrogram
         ax1 = fig.add_subplot(1,2,1)
-        linked = linkage(pdist(X), method='ward')
-        k, cut_distance = find_optimal_clusters(linked)
         dendrogram(linked,
                    labels=stnm,
                    orientation='top',
@@ -636,9 +639,6 @@ def clusters(st, plot=False, grid_linewidth=0.5, figsize=(12,6), verbose=True):
         plt.grid(linewidth=grid_linewidth)
         plt.xlabel("Sensor"); plt.ylabel('Distance [km]')
         plt.title("Hierarchical Clustering Dendrogram")
-        if verbose == True:
-            print(f"Suggested number of clusters: {k}")
-            print(f"Distance to cut dendrogram: {cut_distance:.2f}")
         # Plot element pair distances first
         ax2 = fig.add_subplot(1,2,2, sharey=ax1)
         ax2.plot(x.astype(int), stn_dist_sort, 'o', color='k')
@@ -1297,7 +1297,7 @@ def adaptive_array(st, f_bands, array_type, n_clusters=None, plot=False, figsize
     #-----------------------------------------------------------------------------------------------------------------#
     # Calculate and sort by RC
     RC = []; subarray_stnms = []
-    dbscan_dist_thresh = np.std(clusters(st)[0]) # here we set the outlier distance threshold (in km) used to identify outlier stations in subarrays
+    dbscan_dist_thresh = np.std(clusters(st, verbose=False)[0]) # here we set the outlier distance threshold (in km) used to identify outlier stations in subarrays
     dbscan_dist_thresh *= 1000 # convert to meters
     if array_type=='seismic':
         scaler_geometry = X_seismic_scaler
@@ -3149,228 +3149,6 @@ def plot_array_coords(X, stnm, x_lim=None, y_lim=None, figsize=(9,6), units='m',
     if fname_plot is not None:
         fig.savefig(fname_plot, dpi=300)
 
-        
-'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-
-def plotFK(st, startTime, endTime, frqlow, frqhigh,
-           sll_x=-3.6, slm_x=3.6, sll_y=-3.6, slm_y=3.6, sl_s=0.18,
-           plot=True, normalize=True, sl_corr=[0.,0.], show_peak=False,
-           cmap='viridis', figsize=(9,6), fname_plot=None,
-           x_label_fontsize=12, y_label_fontsize=12,
-           x_ticklabel_size=10, y_ticklabel_size=10):
-    '''----------------------------------------------------------------------------------------------------------------------------------
-    Computes and displays an FK plot for an ObsPy Stream object
-
-    Input:
-        st: ObsPy stream object
-        startTime (UTCDateTime object): start time of stream
-        endTime (UTCDateTime object): end time of stream
-        frqlow, frqhigh (float/int): frequency range used for processing
-        sll_x, slm_x (float/int): extent of x-axis in slowness grid
-        sll_y, slm_y (float/int): extent of y-axis in slowness grid
-        sl_s (float/int): slowness grid resolution
-        sl_corr (array): specified correction for slowness
-        plot (boolean): whether to plot FK
-        normalize (boolean): whether to normalize the data in the time window before running FK
-        show_peak (boolean): whether to show the peak of the FK
-        cmap (str): colormap to be used for plotting
-        figsize (tuple): figure size
-        fname_plot (str): filepath to save figure
-        x_label_fontsize (int/float): fontsize of x-axis label
-        y_label_fontsize (int/float): fontsize of y-axis label
-        x_ticklabel_size (int/float): fontsize of x-axis tick labels
-        y_ticklabel_size (int/float): fontsize of y-axis tick labels
-
-    Output:
-        relpow_map (array): relative power map of FK
-        baz (float/int): back azimuth corresponding to peak
-        vel (float/int): trace velocity corresponding to peak
-    ----------------------------------------------------------------------------------------------------------------------------------'''
-    stream = st.copy()
-    stream = stream.trim(startTime, endTime)
-
-    if normalize:
-        for st_i in stream:
-            st_i.data = st_i.data/np.max(np.abs(st_i.data))
-    
-    for st_i in stream:
-        st_i.stats.coordinates = AttribDict({
-            'latitude': st_i.stats.sac.stla,
-            'elevation': st_i.stats.sac.stel,
-            'longitude': st_i.stats.sac.stlo})
-
-    verbose = False
-    coordsys = 'lonlat'
-    method = 0
-
-    prewhiten = 0
-
-    grdpts_x = int(((slm_x - sll_x) / sl_s + 0.5) + 1)
-    grdpts_y = int(((slm_y - sll_y) / sl_s + 0.5) + 1)
-
-    geometry = get_geometry(stream, coordsys=coordsys)
-
-    time_shift_table = get_timeshift(geometry, sll_x, sll_y,
-                                     sl_s, grdpts_x, grdpts_y)
-    nstat = len(stream)
-    fs = stream[0].stats.sampling_rate
-    nsamp = stream[0].stats.npts
-
-    # generate plan for rfftr
-    nfft = next_pow_2(nsamp)
-    deltaf = fs / float(nfft)
-    nlow = int(frqlow / float(deltaf) + 0.5)
-    nhigh = int(frqhigh / float(deltaf) + 0.5)
-    nlow = max(1, nlow)  # avoid using the offset
-    nhigh = min(nfft // 2 - 1, nhigh)  # avoid using nyquist
-    nf = nhigh - nlow + 1  # include upper and lower frequency
-
-    # to speed up the routine a bit we estimate all steering vectors in advance
-    steer = np.empty((nf, grdpts_x, grdpts_y, nstat), dtype=np.complex128)
-    clibsignal.calcSteer(nstat, grdpts_x, grdpts_y, nf, nlow,
-                         deltaf, time_shift_table, steer)
-    _r = np.empty((nf, nstat, nstat), dtype=np.complex128)
-    ft = np.empty((nstat, nf), dtype=np.complex128)
-
-    # 0.22 matches 0.2 of historical C bbfk.c
-    tap = cosine_taper(nsamp, p=0.22)
-    relpow_map = np.empty((grdpts_x, grdpts_y), dtype=np.float64)
-    abspow_map = np.empty((grdpts_x, grdpts_y), dtype=np.float64)
-
-    for i, tr in enumerate(stream):
-        dat = tr.data
-        dat = (dat - dat.mean()) * tap
-        ft[i, :] = np.fft.rfft(dat, nfft)[nlow:nlow + nf]
-
-    ft = np.ascontiguousarray(ft, np.complex128)
-    relpow_map.fill(0.)
-    abspow_map.fill(0.)
-
-    # computing the covariances of the signal at different receivers
-    dpow = 0.
-    for i in range(nstat):
-        for j in range(i, nstat):
-            _r[:, i, j] = ft[i, :] * ft[j, :].conj()
-            if i != j:
-                _r[:, j, i] = _r[:, i, j].conjugate()
-            else:
-                dpow += np.abs(_r[:, i, j].sum())
-    dpow *= nstat
-
-    clibsignal.generalizedBeamformer(
-        relpow_map, abspow_map, steer, _r, nstat, prewhiten,
-        grdpts_x, grdpts_y, nf, dpow, method)
-
-    ix, iy = np.unravel_index(relpow_map.argmax(), relpow_map.shape)
-
-    # here we compute baz, slow
-    slow_x = sll_x + ix * sl_s
-    slow_y = sll_y + iy * sl_s
-
-    # ---------
-    slow_x = slow_x - sl_corr[0]
-    slow_y = slow_y - sl_corr[1]
-    #print(slow_x, slow_y)
-    # ---------
-
-    slow = np.sqrt(slow_x ** 2 + slow_y ** 2)
-    if slow < 1e-8:
-        slow = 1e-8
-    azimut = 180 * math.atan2(slow_x, slow_y) / math.pi
-    baz = azimut % -360 + 180
-
-    if plot:
-        fig = plt.figure(figsize=figsize)
-        plt.pcolormesh(np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[0],
-                       np.arange(sll_x, slm_x + sl_s, sl_s)+sl_corr[1],
-                       np.flipud(np.fliplr(relpow_map.transpose())),
-                       cmap=cmap)
-        plt.xlim(sll_x,slm_x)
-        plt.ylim(sll_y,slm_y)
-        plt.plot(0, 0, 'w+')
-        if show_peak:
-            plt.plot(-slow_x, -slow_y, 'r*')
-
-        plt.xlabel('Slowness x [s/km]', fontsize=x_label_fontsize)
-        plt.ylabel('Slowness y [s/km]', fontsize=y_label_fontsize)
-
-        ax = plt.gca()
-        ax.tick_params(axis='x', labelsize=x_ticklabel_size)
-        ax.tick_params(axis='y', labelsize=y_ticklabel_size)
-
-        plt.title('Peak semblance at ' + str(round(baz % 360., 2)) + ' [deg.] ' + str(round(1/slow, 2)) + ' [km/s]')
-        plt.tight_layout()
-        if fname_plot: fig.savefig(fname_plot, dpi=300)
-
-    # only flipping left-right, when using imshow to plot the matrix is takes points top to bottom
-    # points are now starting at top-left in row major
-    return np.fliplr(relpow_map.transpose()), baz % 360, 1. / slow
-
-'------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-
-def plot_sliding_window(st, element, T, B, V, C=None, v_min=0, v_max=5., 
-                        semblance_threshold=None, twin_plot=None, clim=[0,1], figsize=(9,5)):
-    '''----------------------------------------------------------------------------------------------------------------------------------
-    Plots the results of sliding-window array processing within a single frequency band
-    
-    Input:
-        st: ObsPy stream object containing array data
-        element (str): name of the element to plot the time series data for
-        T (array): timestamps of array processing estimates (center of time windows) (s)
-        B (array): back azimuths
-        V (array): trace velocities (km/s)
-        C (array): optional color of points (e.g., Semblance, F-statistic, Correlation)
-        v_min, v_max (float/int): range in trace velocity for y-axis to plot
-        semblance_threshold (float/int): filter out any points below set coherence threshold
-        twin_plot (list): start and end times (in seconds) to plot
-        clim (list): range in C parameter to plot
-        figsize (tuple): specifies figure size
-    ----------------------------------------------------------------------------------------------------------------------------------'''
-    tr = st.select(station=element)[0]
-
-    fig = plt.figure(figsize=figsize)
-
-    ax1 = fig.add_subplot(3,1,1)
-    t_tr = np.arange(0, tr.stats.npts*tr.stats.delta, tr.stats.delta)
-    plt.plot(t_tr, tr.data/np.max(np.abs(tr.data)), 'k-')
-    ax1.tick_params(labelbottom=False)
-
-    ax2 = fig.add_subplot(3,1,2, sharex=ax1)
-    if C is not None:
-        if semblance_threshold is not None:
-            ix2 = np.where(C < semblance_threshold)
-            plt.scatter(T[ix2], B[ix2], s=0.05, c='lightgray')
-            ix = np.where(C >= semblance_threshold)
-            plt.scatter(T[ix], B[ix], s=4, c=C[ix], vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
-        else:
-            plt.scatter(T, B, s=4, c=C, vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
-    else:
-        plt.plot(T, B, 'k.')
-    ax2.set_ylim([0,360])
-    ax2.set_ylabel('Backazimuth')
-    if twin_plot is not None:
-        plt.xlim(twin_plot)
-    ax2.tick_params(labelbottom=False)
-
-    ax3 = fig.add_subplot(3,1,3, sharex=ax1)
-    if C is not None:
-        if semblance_threshold is not None:
-            ix2 = np.where(C < semblance_threshold)
-            plt.scatter(T[ix2], V[ix2], s=0.05, c='lightgray')
-            ix = np.where(C >= semblance_threshold)
-            plt.scatter(T[ix], V[ix], s=4, c=C[ix], vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
-        else:
-            plt.scatter(T, V, s=4, c=C, vmin=clim[0], vmax=clim[1], cmap=plt.get_cmap('hot_r'))
-    else:
-        plt.plot(T, V, 'k.')
-    ax3.set_ylim([v_min,v_max])
-    ax3.set_ylabel('Phase vel.')
-    ax3.set_xlabel('Time [s] after ' + str(tr.stats.starttime).split('.')[0].replace('T', ' '))
-    
-    plt.xlim([t_tr[0], t_tr[len(t_tr)-1]])
-
-    ax1.get_yaxis().set_ticks([])
-
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 # Ancillary plotting functions for azimuth visualization
 
@@ -4513,6 +4291,7 @@ def plot_zero_crossings(st, element=None, bandpass=[0.5,5], resample=100, taper=
         fig.savefig(fname_plot)
 
 '------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+
 def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], station_order=None, taper='cosine', max_percentage=0.05, max_length=60, delay_times=None, data_envelope=False, trace_spacing=2.25, t_lim=None, 
                            plot_UTC=False, UTC_time_interval=None, families=None, families_table=None, family_idx=None, trim_family_window=None, v_lim=None, return_xcorr_params=False, 
                            ax1_xlabel_fontsize=10, ax1_ylabel_fontsize=10, ax1_title_fontsize=10, ax1_ticklabel_size=10, ax2_xlabel_fontsize=10, colorbar_fontsize=10, ax2_ticklabel_size=10,
@@ -4833,6 +4612,7 @@ def plot_cross_correlation(st, f_bands, bandpass=[0.5,5], station_order=None, ta
         fig.savefig(fname_plot, dpi=300)
     if return_xcorr_params == True:
         return xcorr_coef_matrix, xcorr_lag_times, ref_signal
+    
 '----------------------------------------------'
 '---------------------------------------------------------------------------'
 '----------------------------------------------------------------------------------------------------------------'
